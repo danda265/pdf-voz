@@ -1,0 +1,23 @@
+# Compilação
+dist/
+build/
+*.egg-info/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Temporários de áudio
+temp/
+*.mp3
+
+# Secrets
+.env
+*.env
+
+# IDE
+.vscode/
+.idea/
