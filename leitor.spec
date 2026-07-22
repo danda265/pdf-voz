@@ -2,7 +2,7 @@
 
 a = Analysis(
     ['main.py'],
-    pathex=['C:/Users/trlpa/Projetos/leitor-voz'],
+    pathex=['.'],
     binaries=[],
     datas=[
         # Tesseract embutido — exe + DLLs + tessdata (por + eng)

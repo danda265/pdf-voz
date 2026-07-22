@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import itertools
+import re
 import sys
 import threading
 from pathlib import Path
@@ -14,13 +15,15 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFrame,
     QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton,
-    QProgressBar, QSlider, QTextEdit, QVBoxLayout, QWidget,
+    QProgressBar, QSlider, QSpinBox, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from audio_player import AudioPlayer
 from document_reader import DocumentReader
 from tts_engine import DEFAULT_VOICE, TTSEngine
 from utils import clean_text, sanitize_error_message
+
+APP_VERSION = '1.1.0'   # fonte única da versão — o instalador (.iss) deve usar o mesmo valor
 
 _FONT_MIN, _FONT_MAX, _FONT_DEFAULT = 12, 28, 15
 
@@ -41,11 +44,25 @@ _SUPPORTED_EXTS = {'.pdf', '.docx', '.doc'}
 _session_counter = itertools.count(1)
 
 
+def _shorten_first_chunk(chunks: list, limit: int = 700) -> list:
+    """Divide só o primeiro bloco numa fronteira de sentença para o áudio começar rápido.
+    O restante mantém o tamanho normal (não deixa a leitura picotada)."""
+    if not chunks or len(chunks[0]) <= limit:
+        return chunks
+    first = chunks[0]
+    matches = list(re.finditer(r'[.!?;:]\s', first[:limit + 1]))
+    cut = matches[-1].end() if matches else limit
+    head, tail = first[:cut].strip(), first[cut:].strip()
+    if not head or not tail:
+        return chunks
+    return [head, tail] + list(chunks[1:])
+
+
 # ── Threads ───────────────────────────────────────────────────────────────────
 
 
 class LoaderThread(QThread):
-    loaded   = pyqtSignal(str, int, str)
+    loaded   = pyqtSignal(str, int, str, list)
     progress = pyqtSignal(int, int)
     error    = pyqtSignal(str)
 
@@ -58,7 +75,7 @@ class LoaderThread(QThread):
         try:
             reader = DocumentReader(use_ocr=self.use_ocr)
             result = reader.read(self.path, lambda c, t: self.progress.emit(c, t))
-            self.loaded.emit(result.text, result.total_pages, result.kind)
+            self.loaded.emit(result.text, result.total_pages, result.kind, result.pages)
         except Exception as exc:
             self.error.emit(sanitize_error_message(str(exc)))
 
@@ -98,7 +115,7 @@ class SpeechThread(QThread):
 
     def run(self) -> None:
         try:
-            chunks = self.engine.split(self.text)
+            chunks = _shorten_first_chunk(self.engine.split(self.text))
             total  = len(chunks)
             if not total:
                 self.status.emit('Nenhum texto para ler.')
@@ -182,6 +199,9 @@ class MainWindow(QMainWindow):
         self.current_file: Optional[str] = None
         self.current_text = ''
         self.total_pages  = 0
+        self.pages: list[str] = []          # texto por página (PDF) para leitura a partir de N
+        self._can_pick_page = False         # seletor de página inicial disponível?
+        self._hl_pos = 0                    # posição do editor de onde buscar o próximo realce
         self.temp_dir     = Path(__file__).resolve().parent / 'temp'
         self.speech_thread: Optional[SpeechThread] = None
         self.loader_thread: Optional[LoaderThread] = None
@@ -318,6 +338,15 @@ class MainWindow(QMainWindow):
         self.font_minus.clicked.connect(lambda: self._change_font(-1))
         self.font_plus.clicked.connect(lambda: self._change_font(+1))
 
+        page_lbl = QLabel('INICIAR NA PÁGINA')
+        page_lbl.setObjectName('SectionLabel')
+        self.start_page_spin = QSpinBox()
+        self.start_page_spin.setRange(1, 1)
+        self.start_page_spin.setValue(1)
+        self.start_page_spin.setFixedWidth(84)
+        self.start_page_spin.setEnabled(False)
+        self.start_page_spin.setToolTip('Página onde a leitura vai começar (1 = do início). Só para PDF.')
+
         self.ocr_checkbox = QCheckBox('OCR automático')
         self.ocr_checkbox.setChecked(True)
 
@@ -335,6 +364,9 @@ class MainWindow(QMainWindow):
         row1.addWidget(font_lbl)
         row1.addWidget(self.font_minus)
         row1.addWidget(self.font_plus)
+        row1.addSpacing(6)
+        row1.addWidget(page_lbl)
+        row1.addWidget(self.start_page_spin)
         row1.addStretch(1)
         row1.addWidget(self.ocr_checkbox)
 
@@ -409,7 +441,7 @@ class MainWindow(QMainWindow):
             '<p><b>Desenvolvido por:</b><br>Anderson Rodrigo Costa</p>'
             '<p style="color:#64748B;font-size:11px;">'
             'PDF · Word · OCR · Voz Microsoft Neural<br>'
-            'Versão 1.0</p>'
+            f'Versão {APP_VERSION}</p>'
         )
 
     def _toggle_theme(self) -> None:
@@ -473,12 +505,19 @@ class MainWindow(QMainWindow):
         self.loader_thread.finished.connect(self.loader_thread.deleteLater)
         self.loader_thread.start()
 
-    def _document_loaded(self, text: str, total_pages: int, kind: str) -> None:
+    def _document_loaded(self, text: str, total_pages: int, kind: str, pages: list) -> None:
         self.current_text = clean_text(text)
         self.total_pages  = total_pages
+        self.pages        = list(pages) if pages else []
         self.editor.setPlainText(self.current_text)
         self.page_label.setText(f'Página 1 de {max(total_pages, 1)}')
         self.progress_bar.setValue(0)
+        # seletor de página inicial: só para PDF com várias páginas e lista de páginas íntegra
+        self._can_pick_page = (kind == 'PDF' and total_pages > 1 and len(self.pages) == total_pages)
+        self.start_page_spin.setRange(1, total_pages if self._can_pick_page else 1)
+        self.start_page_spin.setValue(1)
+        self.start_page_spin.setSuffix(f' / {total_pages}' if self._can_pick_page else '')
+        self.start_page_spin.setEnabled(self._can_pick_page)
         fname = Path(self.current_file).name if self.current_file else ''
         self.status_label.setText(
             f'{kind} carregado: "{fname}"  •  {len(self.current_text):,} caracteres'
@@ -490,10 +529,16 @@ class MainWindow(QMainWindow):
         self.current_file = None
         self.current_text = ''
         self.total_pages  = 0
+        self.pages        = []
+        self._can_pick_page = False
         self.editor.clear()
         self.progress_bar.setValue(0)
         self.page_label.setText('—')
         self.status_label.setText('Arquivo fechado.')
+        self.start_page_spin.setRange(1, 1)
+        self.start_page_spin.setValue(1)
+        self.start_page_spin.setSuffix('')
+        self.start_page_spin.setEnabled(False)
         self._set_reading_buttons(False)
         self._clear_temp_audio()
 
@@ -513,9 +558,26 @@ class MainWindow(QMainWindow):
         if voice not in _ALLOWED_VOICE_IDS:
             QMessageBox.warning(self, 'Voz inválida', 'Selecione uma voz válida da lista.')
             return
+        # texto a ler: da página escolhida em diante (1 = do início / documento inteiro)
+        start_page = self.start_page_spin.value()
+        if self._can_pick_page and self.pages and 1 < start_page <= len(self.pages):
+            text_to_read = '\n\n'.join(self.pages[start_page - 1:]).strip()
+            if not text_to_read:
+                QMessageBox.information(
+                    self, 'Sem texto',
+                    f'A partir da página {start_page} não há texto para ler.'
+                )
+                return
+            self.status_label.setText(
+                f'Iniciando na página {start_page} de {self.total_pages}...'
+            )
+        else:
+            start_page = 1
+            text_to_read = self.current_text
         self.stop_reading()   # para sem travar (não bloqueia)
+        self._scroll_to_page(start_page)   # já mostra na tela onde a leitura vai começar
         self.speech_thread = SpeechThread(
-            self.current_text, voice,
+            text_to_read, voice,
             self.speed_slider.value(), self.volume_slider.value(),
             self.temp_dir,
         )
@@ -582,14 +644,20 @@ class MainWindow(QMainWindow):
     # ── Highlight ─────────────────────────────────────────────────────────────
 
     def _highlight_chunk(self, chunk: str, index: int, total: int) -> None:
-        doc    = self.editor.document()
-        cursor = doc.find(chunk[:min(180, len(chunk))])
-        if cursor.isNull():
-            cursor = doc.find(chunk[:min(60, len(chunk))])
-        if not cursor.isNull():
+        doc = self.editor.document()
+        # QTextDocument.find NÃO casa strings com '\n' — busca pela 1ª linha não-vazia do trecho
+        key = ''
+        for line in chunk.split('\n'):
+            line = line.strip()
+            if line:
+                key = line[:120]
+                break
+        cursor = self._find_forward(doc, key) if key else QTextCursor(doc)
+        if key and not cursor.isNull():
             start = cursor.selectionStart()
-            cursor.setPosition(start)
-            cursor.movePosition(
+            hl = QTextCursor(doc)
+            hl.setPosition(start)
+            hl.movePosition(
                 QTextCursor.MoveOperation.Right,
                 QTextCursor.MoveMode.KeepAnchor,
                 min(len(chunk), 2600),
@@ -597,7 +665,7 @@ class MainWindow(QMainWindow):
             fmt = QTextCharFormat()
             fmt.setBackground(QColor('#78350F' if self._dark else '#FEF08A'))
             ex        = QTextEdit.ExtraSelection()
-            ex.cursor = cursor
+            ex.cursor = hl
             ex.format = fmt
             self.editor.setExtraSelections([ex])
             # rola sem criar seleção visível
@@ -605,7 +673,41 @@ class MainWindow(QMainWindow):
             nav.setPosition(start)
             self.editor.setTextCursor(nav)
             self.editor.ensureCursorVisible()
+            self._hl_pos = start + len(key)   # próxima busca avança a partir daqui
         self.progress_bar.setValue(int((index - 1) / max(total, 1) * 100))
+
+    def _find_forward(self, doc, key: str) -> 'QTextCursor':
+        """Procura key a partir de self._hl_pos; se não achar adiante, tenta do início."""
+        pos = min(max(self._hl_pos, 0), max(0, doc.characterCount() - 1))
+        origin = QTextCursor(doc)
+        origin.setPosition(pos)
+        cursor = doc.find(key, origin)
+        if cursor.isNull():
+            cursor = doc.find(key)
+        return cursor
+
+    def _scroll_to_page(self, page: int) -> None:
+        """Rola o editor para o início da página indicada (1 = topo do documento)."""
+        doc = self.editor.document()
+        if page <= 1:
+            self._hl_pos = 0
+            nav = self.editor.textCursor()
+            nav.setPosition(0)
+            self.editor.setTextCursor(nav)
+            self.editor.ensureCursorVisible()
+            return
+        cursor = doc.find(f'--- Pagina {page} de')
+        if cursor.isNull():
+            self._hl_pos = 0
+            return
+        start = cursor.selectionStart()
+        self._hl_pos = start
+        # deixa a página perto do topo do visor: vai ao fim e volta ao alvo
+        self.editor.moveCursor(QTextCursor.MoveOperation.End)
+        nav = self.editor.textCursor()
+        nav.setPosition(start)
+        self.editor.setTextCursor(nav)
+        self.editor.ensureCursorVisible()
 
     def _update_page_progress(self, current: int, total: int) -> None:
         self.page_label.setText(f'Página {current} de {total}')
@@ -637,6 +739,7 @@ class MainWindow(QMainWindow):
         self.stop_button.setEnabled(reading)
         self.open_button.setEnabled(not reading)
         self.export_button.setEnabled(has_text and not reading)
+        self.start_page_spin.setEnabled(self._can_pick_page and not reading)
 
     def _show_error(self, message: str) -> None:
         self.status_label.setText('Ocorreu um erro.')
@@ -769,6 +872,14 @@ def _build_stylesheet(dark: bool) -> str:
         background:{surface}; color:{text}; border:1px solid {border};
         selection-background-color:#3B82F6; selection-color:white;
     }}
+    QSpinBox {{
+        background:{surface}; color:{text};
+        border:1.5px solid {border}; border-radius:7px;
+        padding:4px 6px; font-size:13px; min-height:32px;
+    }}
+    QSpinBox:hover {{ border-color:#93C5FD; }}
+    QSpinBox:disabled {{ color:{dis_fg}; background:{dis_bg}; }}
+    QSpinBox::up-button, QSpinBox::down-button {{ width:16px; border:none; background:transparent; }}
     QSlider::groove:horizontal {{ background:{prog_bg}; height:5px; border-radius:3px; }}
     QSlider::handle:horizontal {{ background:#3B82F6; width:16px; height:16px; border-radius:8px; margin:-6px 0; }}
     QSlider::sub-page:horizontal {{ background:#3B82F6; border-radius:3px; }}

@@ -3,6 +3,11 @@ dist/
 build/
 *.egg-info/
 
+# Instalador e binários distribuíveis (grandes demais para o git — usar GitHub Releases)
+installer/
+*.exe
+*.zip
+
 # Python
 __pycache__/
 *.pyc

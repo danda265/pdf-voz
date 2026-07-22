@@ -8,13 +8,13 @@ MAX_FILE_MB = 100.0
 
 # Ligaduras e invisíveis — chaves como ord() evitam qualquer ambiguidade de encoding
 _LIGATURES = str.maketrans({
-    0xFB01: ‘fi’,   # ﬁ
-    0xFB02: ‘fl’,   # ﬂ
-    0xFB03: ‘ffi’,  # ﬃ
-    0xFB04: ‘ffl’,  # ﬄ
-    0xFB00: ‘ff’,   # ﬀ
-    0xFB05: ‘ft’,   # ﬅ
-    0xFB06: ‘st’,   # ﬆ
+    0xFB01: 'fi',   # ﬁ
+    0xFB02: 'fl',   # ﬂ
+    0xFB03: 'ffi',  # ﬃ
+    0xFB04: 'ffl',  # ﬄ
+    0xFB00: 'ff',   # ﬀ
+    0xFB05: 'ft',   # ﬅ
+    0xFB06: 'st',   # ﬆ
     0x00AD: None,   # soft hyphen
     0x200B: None,   # zero-width space
     0x200C: None,   # zero-width non-joiner
@@ -23,13 +23,13 @@ _LIGATURES = str.maketrans({
 
 # Pontuação tipográfica → amigável ao TTS
 _PUNCT = str.maketrans({
-    0x2014: ‘, ‘,   # — travessão
-    0x2013: ‘, ‘,   # – meia-risca
-    0x2026: ‘...’,  # … reticências
-    0x201C: ‘”’,    # “ aspas esq.
-    0x201D: ‘”’,    # “ aspas dir.
-    0x2018: “’”,    # ‘ apóstrofo esq.
-    0x2019: “’”,    # ‘ apóstrofo dir.
+    0x2014: ', ',   # — travessão
+    0x2013: ', ',   # – meia-risca
+    0x2026: '...',  # … reticências
+    0x201C: '"',    # “ aspas esq.
+    0x201D: '"',    # ” aspas dir.
+    0x2018: "'",    # ‘ apóstrofo esq.
+    0x2019: "'",    # ’ apóstrofo dir.
 })
 
 
@@ -58,7 +58,8 @@ def clean_text(text: str) -> str:
 
     # 6. Pontuação colada
     text = re.sub(r' +([,.;:!?%])', r'\1', text)
-    text = re.sub(r'([,.;:!?])([^\s\n\d])', r'\1 \2', text)
+    # separa "fim.Próximo" -> "fim. Próximo", mas preserva "..." e "3.14"
+    text = re.sub(r'([,.;:!?])(?=[^\W\d_])', r'\1 ', text)
     text = re.sub(r'\s+\n', '\n', text)
 
     return text.strip()
