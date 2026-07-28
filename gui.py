@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import bisect
 import itertools
 import re
 import sys
@@ -7,7 +8,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-from PyQt6.QtCore import Qt, QThread, pyqtSignal
+from PyQt6.QtCore import QPoint, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import (
     QColor, QDragEnterEvent, QDropEvent, QFont,
     QKeySequence, QPalette, QShortcut, QTextCharFormat, QTextCursor,
@@ -202,6 +203,7 @@ class MainWindow(QMainWindow):
         self.pages: list[str] = []          # texto por página (PDF) para leitura a partir de N
         self._can_pick_page = False         # seletor de página inicial disponível?
         self._hl_pos = 0                    # posição do editor de onde buscar o próximo realce
+        self._page_starts: list[int] = []   # posição no editor onde cada página começa (índice 0 = pág. 1)
         self.temp_dir     = Path(__file__).resolve().parent / 'temp'
         self.speech_thread: Optional[SpeechThread] = None
         self.loader_thread: Optional[LoaderThread] = None
@@ -287,6 +289,8 @@ class MainWindow(QMainWindow):
             'Você também pode arrastar e soltar o arquivo diretamente nesta janela.'
         )
         self._update_editor_font()
+        # ao rolar, atualiza o rótulo com a página que está no topo do visor
+        self.editor.verticalScrollBar().valueChanged.connect(self._on_editor_scrolled)
         return self.editor
 
     def _build_footer(self) -> QFrame:
@@ -509,7 +513,9 @@ class MainWindow(QMainWindow):
         self.current_text = clean_text(text)
         self.total_pages  = total_pages
         self.pages        = list(pages) if pages else []
+        self._page_starts = []   # limpa antes de preencher (evita mapear com dados do doc anterior)
         self.editor.setPlainText(self.current_text)
+        self._page_starts = self._compute_page_starts(self.current_text)
         self.page_label.setText(f'Página 1 de {max(total_pages, 1)}')
         self.progress_bar.setValue(0)
         # seletor de página inicial: só para PDF com várias páginas e lista de páginas íntegra
@@ -530,6 +536,7 @@ class MainWindow(QMainWindow):
         self.current_text = ''
         self.total_pages  = 0
         self.pages        = []
+        self._page_starts = []
         self._can_pick_page = False
         self.editor.clear()
         self.progress_bar.setValue(0)
@@ -712,6 +719,25 @@ class MainWindow(QMainWindow):
     def _update_page_progress(self, current: int, total: int) -> None:
         self.page_label.setText(f'Página {current} de {total}')
         self.progress_bar.setValue(int(current / max(total, 1) * 100))
+
+    def _compute_page_starts(self, text: str) -> list[int]:
+        """Posição inicial de cada marcador '--- Pagina N de ... ---' no texto do editor.
+        Índice 0 = página 1. Fica vazio para Word (que não tem marcadores de página)."""
+        return [m.start() for m in re.finditer(r'---\s*Pagina\s+\d+\s+de\s+\d+\s*---', text)]
+
+    def _page_at_position(self, pos: int) -> int:
+        """Página cujo marcador é o último a começar em ou antes de `pos`."""
+        idx = bisect.bisect_right(self._page_starts, pos)
+        return max(1, min(idx, self.total_pages))
+
+    def _on_editor_scrolled(self, _value: int = 0) -> None:
+        """Ao rolar o editor, atualiza o rótulo com a página visível no topo do visor."""
+        if not self._page_starts or self.total_pages <= 0:
+            return
+        cursor = self.editor.cursorForPosition(QPoint(4, 4))
+        self.page_label.setText(
+            f'Página {self._page_at_position(cursor.position())} de {self.total_pages}'
+        )
 
     def _update_reading_progress(self, current: int, total: int) -> None:
         self.progress_bar.setValue(int(current / max(total, 1) * 100))
