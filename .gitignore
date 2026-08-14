@@ -29,3 +29,6 @@ temp/
 
 # Worktrees de desenvolvimento isolado
 .worktrees/
+
+# Progresso de execução do plano (scratch, não versionado)
+.superpowers/
