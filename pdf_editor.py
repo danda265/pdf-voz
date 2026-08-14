@@ -116,6 +116,9 @@ def resolve_font(doc: fitz.Document, page: fitz.Page, span: Optional[TextSpan],
     if fontbuffer:
         return FontChoice(fontname, fontbuffer, size, color, used_fallback=False)
 
-    serifed = any(hint in (family_hint or '').lower() for hint in _SERIF_HINTS)
+    if span is not None and not override.family:
+        serifed = span.serifed
+    else:
+        serifed = any(hint in (family_hint or '').lower() for hint in _SERIF_HINTS)
     table = _BASE14_SERIF if serifed else _BASE14_SANS
     return FontChoice(table[(bold, italic)], None, size, color, used_fallback=True)

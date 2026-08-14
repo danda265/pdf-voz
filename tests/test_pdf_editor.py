@@ -5,7 +5,7 @@ import os
 import fitz
 import pytest
 
-from pdf_editor import FormatOverride, resolve_font, spans_for_page
+from pdf_editor import FormatOverride, TextSpan, resolve_font, spans_for_page
 
 ARIAL_PATH = r'C:\Windows\Fonts\arial.ttf'
 
@@ -56,3 +56,15 @@ def test_resolve_font_falls_back_when_family_not_embedded(sample_pdf):
     doc.close()
     assert choice.used_fallback is True
     assert choice.fontname in ('helv', 'heit', 'hebo', 'hebi', 'tiro', 'tibo', 'tiit', 'tibi')
+
+
+def test_resolve_font_fallback_prefers_span_serifed_over_name_heuristic(sample_pdf):
+    doc = fitz.open(str(sample_pdf))
+    page = doc[0]
+    span = TextSpan(
+        text='Texto', bbox=(0, 0, 10, 10), origin=(0, 0), font_name='Palatino',
+        size=12.0, color=(0, 0, 0), bold=False, italic=False, serifed=True,
+    )
+    choice = resolve_font(doc, page, span, override=None)
+    doc.close()
+    assert choice.fontname in ('tiro', 'tibo', 'tiit', 'tibi')
