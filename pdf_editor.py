@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional, Tuple
 
 import fitz
@@ -145,3 +146,32 @@ def insert_free_text(doc: fitz.Document, page: fitz.Page, point: Tuple[float, fl
         page.insert_font(fontname=choice.fontname, fontbuffer=choice.fontbuffer)
     page.insert_text(point, text, fontname=choice.fontname, fontsize=choice.size, color=choice.color)
     return choice
+
+
+class PDFEditError(Exception):
+    pass
+
+
+def open_for_edit(path: str) -> fitz.Document:
+    try:
+        doc = fitz.open(path)
+    except Exception as exc:
+        raise PDFEditError(f'Nao foi possivel abrir o PDF: {exc}') from exc
+    if doc.is_encrypted:
+        doc.close()
+        raise PDFEditError('Este PDF e protegido por senha e nao pode ser editado.')
+    if not doc.permissions & fitz.PDF_PERM_MODIFY:
+        doc.close()
+        raise PDFEditError('Este PDF nao permite edicao (restricao de permissao do arquivo).')
+    return doc
+
+
+def save_copy(doc: fitz.Document, original_path: str) -> Path:
+    original = Path(original_path)
+    target = original.with_name(f'{original.stem}_editado{original.suffix}')
+    counter = 2
+    while target.exists():
+        target = original.with_name(f'{original.stem}_editado_{counter}{original.suffix}')
+        counter += 1
+    doc.save(str(target))
+    return target

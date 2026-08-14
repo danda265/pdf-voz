@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import hashlib
 import os
 
 import fitz
 import pytest
 
 from pdf_editor import (FormatOverride, TextSpan, resolve_font, spans_for_page, replace_span_text,
-                        insert_free_text)
+                        insert_free_text, PDFEditError, open_for_edit, save_copy)
 
 ARIAL_PATH = r'C:\Windows\Fonts\arial.ttf'
 
@@ -103,3 +104,33 @@ def test_insert_free_text_adds_without_touching_existing_spans(sample_pdf):
     doc.close()
     assert 'Texto novo' in after
     assert before.strip() in after
+
+
+def test_open_for_edit_rejects_encrypted_pdf(tmp_path):
+    path = tmp_path / 'protegido.pdf'
+    doc = fitz.open()
+    doc.new_page()
+    doc.save(str(path), encryption=fitz.PDF_ENCRYPT_AES_256, owner_pw='dono', user_pw='usuario')
+    doc.close()
+    with pytest.raises(PDFEditError):
+        open_for_edit(str(path))
+
+
+def test_open_for_edit_rejects_corrupted_file(tmp_path):
+    path = tmp_path / 'corrompido.pdf'
+    path.write_bytes(b'nao e um pdf de verdade')
+    with pytest.raises(PDFEditError):
+        open_for_edit(str(path))
+
+
+def test_save_copy_never_overwrites_original(sample_pdf):
+    original_bytes_before = sample_pdf.read_bytes()
+    doc = open_for_edit(str(sample_pdf))
+    page = doc[0]
+    span = next(s for s in spans_for_page(page) if s.text.strip() == 'Ola mundo')
+    replace_span_text(doc, page, span, 'Editado')
+    target = save_copy(doc, str(sample_pdf))
+    doc.close()
+    assert target != sample_pdf
+    assert target.exists()
+    assert hashlib.sha256(sample_pdf.read_bytes()).hexdigest() == hashlib.sha256(original_bytes_before).hexdigest()
