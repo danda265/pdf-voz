@@ -8,6 +8,7 @@ import pytest
 
 from pdf_editor import (FormatOverride, TextSpan, resolve_font, spans_for_page, replace_span_text,
                         insert_free_text, PDFEditError, open_for_edit, save_copy, EditSession)
+from pdf_editor_view import span_at_point
 
 ARIAL_PATH = r'C:\Windows\Fonts\arial.ttf'
 
@@ -149,3 +150,21 @@ def test_undo_reverts_last_edit(sample_pdf):
     assert 'Texto trocado' not in session.doc[0].get_text()
     assert session.undo() is False
     session.doc.close()
+
+
+def test_span_at_point_finds_span_containing_point(sample_pdf):
+    doc = fitz.open(str(sample_pdf))
+    spans = spans_for_page(doc[0])
+    doc.close()
+    target = next(s for s in spans if s.text.strip() == 'Ola mundo')
+    x0, y0, x1, y1 = target.bbox
+    midpoint = ((x0 + x1) / 2, (y0 + y1) / 2)
+    found = span_at_point(spans, midpoint)
+    assert found is target
+
+
+def test_span_at_point_returns_none_outside_any_span(sample_pdf):
+    doc = fitz.open(str(sample_pdf))
+    spans = spans_for_page(doc[0])
+    doc.close()
+    assert span_at_point(spans, (10, 780)) is None
