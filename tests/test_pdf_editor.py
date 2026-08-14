@@ -5,7 +5,7 @@ import os
 import fitz
 import pytest
 
-from pdf_editor import FormatOverride, TextSpan, resolve_font, spans_for_page
+from pdf_editor import FormatOverride, TextSpan, resolve_font, spans_for_page, replace_span_text
 
 ARIAL_PATH = r'C:\Windows\Fonts\arial.ttf'
 
@@ -68,3 +68,26 @@ def test_resolve_font_fallback_prefers_span_serifed_over_name_heuristic(sample_p
     choice = resolve_font(doc, page, span, override=None)
     doc.close()
     assert choice.fontname in ('tiro', 'tibo', 'tiit', 'tibi')
+
+
+def test_replace_span_text_changes_only_target_span(sample_pdf):
+    doc = fitz.open(str(sample_pdf))
+    page = doc[0]
+    span = next(s for s in spans_for_page(page) if s.text.strip() == 'Ola mundo')
+    replace_span_text(doc, page, span, 'Texto trocado')
+    full_text = page.get_text()
+    doc.close()
+    assert 'Texto trocado' in full_text
+    assert 'Ola mundo' not in full_text
+    assert 'Segunda linha de teste' in full_text
+
+
+def test_replace_span_text_with_empty_string_deletes(sample_pdf):
+    doc = fitz.open(str(sample_pdf))
+    page = doc[0]
+    span = next(s for s in spans_for_page(page) if s.text.strip() == 'Ola mundo')
+    replace_span_text(doc, page, span, '')
+    full_text = page.get_text()
+    doc.close()
+    assert 'Ola mundo' not in full_text
+    assert 'Segunda linha de teste' in full_text

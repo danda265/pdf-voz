@@ -122,3 +122,17 @@ def resolve_font(doc: fitz.Document, page: fitz.Page, span: Optional[TextSpan],
         serifed = any(hint in (family_hint or '').lower() for hint in _SERIF_HINTS)
     table = _BASE14_SERIF if serifed else _BASE14_SANS
     return FontChoice(table[(bold, italic)], None, size, color, used_fallback=True)
+
+
+def replace_span_text(doc: fitz.Document, page: fitz.Page, span: TextSpan, new_text: str,
+                      override: Optional[FormatOverride] = None) -> FontChoice:
+    page.add_redact_annot(fitz.Rect(span.bbox), fill=(1, 1, 1))
+    page.apply_redactions()
+    if not new_text:
+        return FontChoice('', None, span.size, span.color, used_fallback=False)
+    choice = resolve_font(doc, page, span, override)
+    if choice.fontbuffer:
+        page.insert_font(fontname=choice.fontname, fontbuffer=choice.fontbuffer)
+    page.insert_text(span.origin, new_text, fontname=choice.fontname,
+                     fontsize=choice.size, color=choice.color)
+    return choice
