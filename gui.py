@@ -6,7 +6,7 @@ import re
 import sys
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Tuple
 
 from PyQt6.QtCore import QPoint, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import (
@@ -16,13 +16,18 @@ from PyQt6.QtGui import (
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFrame,
     QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton,
-    QProgressBar, QSlider, QSpinBox, QTextEdit, QVBoxLayout, QWidget,
+    QProgressBar, QSlider, QSpinBox, QStackedWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from audio_player import AudioPlayer
 from document_reader import DocumentReader
 from tts_engine import DEFAULT_VOICE, TTSEngine
 from utils import clean_text, sanitize_error_message
+from pdf_editor import (
+    EditSession, FormatOverride, PDFEditError, TextSpan,
+    insert_free_text, open_for_edit, replace_span_text, save_copy, spans_for_page,
+)
+from pdf_editor_view import PageScrollArea, SpanEditPopup
 
 APP_VERSION = '1.1.0'   # fonte única da versão — o instalador (.iss) deve usar o mesmo valor
 
@@ -209,6 +214,9 @@ class MainWindow(QMainWindow):
         self.loader_thread: Optional[LoaderThread] = None
         self.export_thread: Optional[ExportThread] = None
         self._last_dir = str(Path.home())
+        self.edit_session: Optional[EditSession] = None
+        self.edit_page_index = 0
+        self._pending_new_point: Tuple[float, float] = (0.0, 0.0)
 
         self._build_ui()
         self._apply_theme()
@@ -225,7 +233,10 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
         layout.addWidget(self._build_header())
-        layout.addWidget(self._build_editor(), 1)
+        self.stack = QStackedWidget()
+        self.stack.addWidget(self._build_editor())     # indice 0: leitura
+        self.stack.addWidget(self._build_edit_view())   # indice 1: edicao
+        layout.addWidget(self.stack, 1)
         layout.addWidget(self._build_footer())
         self.setCentralWidget(root)
 
@@ -269,10 +280,17 @@ class MainWindow(QMainWindow):
         self.about_button.setToolTip('Sobre o PDF VOZ')
         self.about_button.setFixedSize(40, 36)
         self.about_button.clicked.connect(self._show_about)
+        self.edit_mode_button = QPushButton('Editar PDF')
+        self.edit_mode_button.setObjectName('HeaderBtn')
+        self.edit_mode_button.setCheckable(True)
+        self.edit_mode_button.setEnabled(False)
+        self.edit_mode_button.setFixedHeight(36)
+        self.edit_mode_button.toggled.connect(self._on_edit_mode_toggled)
         self.theme_button.clicked.connect(self._toggle_theme)
 
         hbox.addWidget(self.open_button)
         hbox.addWidget(self.close_button)
+        hbox.addWidget(self.edit_mode_button)
         hbox.addWidget(self._vline())
         hbox.addWidget(self.export_button)
         hbox.addWidget(self._vline())
@@ -423,6 +441,142 @@ class MainWindow(QMainWindow):
         vbox.addWidget(self.status_label)
         return footer
 
+    def _build_edit_view(self) -> QWidget:
+        container = QWidget()
+        vbox = QVBoxLayout(container)
+        vbox.setContentsMargins(0, 0, 0, 0)
+        vbox.setSpacing(0)
+
+        toolbar = QFrame()
+        toolbar.setObjectName('EditToolbar')
+        hbox = QHBoxLayout(toolbar)
+        self.edit_prev_button = QPushButton('◀')
+        self.edit_prev_button.clicked.connect(lambda: self._go_edit_page(-1))
+        self.edit_page_label = QLabel('—')
+        self.edit_next_button = QPushButton('▶')
+        self.edit_next_button.clicked.connect(lambda: self._go_edit_page(1))
+        self.add_text_button = QPushButton('Adicionar texto')
+        self.add_text_button.setCheckable(True)
+        self.add_text_button.toggled.connect(self._toggle_add_mode)
+        self.edit_undo_button = QPushButton('Desfazer')
+        self.edit_undo_button.clicked.connect(self._edit_undo)
+        self.edit_save_button = QPushButton('Salvar cópia')
+        self.edit_save_button.clicked.connect(self._save_edited_copy)
+        hbox.addWidget(self.edit_prev_button)
+        hbox.addWidget(self.edit_page_label)
+        hbox.addWidget(self.edit_next_button)
+        hbox.addSpacing(12)
+        hbox.addWidget(self.add_text_button)
+        hbox.addWidget(self.edit_undo_button)
+        hbox.addStretch(1)
+        hbox.addWidget(self.edit_save_button)
+        vbox.addWidget(toolbar)
+
+        self.edit_scroll = PageScrollArea()
+        self.edit_scroll.canvas.span_clicked.connect(self._on_span_clicked)
+        self.edit_scroll.canvas.free_area_clicked.connect(self._on_free_area_clicked)
+        vbox.addWidget(self.edit_scroll, 1)
+
+        self.edit_popup = SpanEditPopup(self)
+        self.edit_popup.confirmed.connect(self._on_popup_confirmed)
+
+        return container
+
+    def _on_edit_mode_toggled(self, checked: bool) -> None:
+        if checked:
+            self._enter_edit_mode()
+        else:
+            self._exit_edit_mode()
+
+    def _enter_edit_mode(self) -> None:
+        if not self.current_file:
+            return
+        try:
+            doc = open_for_edit(self.current_file)
+        except PDFEditError as exc:
+            QMessageBox.warning(self, 'Não é possível editar', str(exc))
+            self.edit_mode_button.setChecked(False)
+            return
+        self.edit_session = EditSession(doc)
+        self.edit_page_index = 0
+        self.stack.setCurrentIndex(1)
+        self._render_edit_page()
+
+    def _exit_edit_mode(self) -> None:
+        self.stack.setCurrentIndex(0)
+        if self.edit_session:
+            self.edit_session.doc.close()
+            self.edit_session = None
+
+    def _render_edit_page(self) -> None:
+        if not self.edit_session:
+            return
+        page = self.edit_session.doc[self.edit_page_index]
+        spans = spans_for_page(page)
+        self.edit_scroll.canvas.show_page(page, spans)
+        self.edit_page_label.setText(
+            f'Página {self.edit_page_index + 1} de {self.edit_session.doc.page_count}'
+        )
+
+    def _go_edit_page(self, delta: int) -> None:
+        if not self.edit_session:
+            return
+        new_index = self.edit_page_index + delta
+        if 0 <= new_index < self.edit_session.doc.page_count:
+            self.edit_page_index = new_index
+            self._render_edit_page()
+
+    def _toggle_add_mode(self, checked: bool) -> None:
+        self.edit_scroll.canvas.set_add_mode(checked)
+
+    def _on_span_clicked(self, span: TextSpan) -> None:
+        x, y = span.origin
+        local = QPoint(int(x * self.edit_scroll.canvas.zoom), int(y * self.edit_scroll.canvas.zoom))
+        self.edit_popup.open_for_span(span, self.edit_scroll.canvas.mapToGlobal(local))
+
+    def _on_free_area_clicked(self, x: float, y: float) -> None:
+        self._pending_new_point = (x, y)
+        local = QPoint(int(x * self.edit_scroll.canvas.zoom), int(y * self.edit_scroll.canvas.zoom))
+        self.edit_popup.open_for_new_text(self.edit_scroll.canvas.mapToGlobal(local))
+
+    def _on_popup_confirmed(self, span, new_text: str, override: FormatOverride) -> None:
+        if not self.edit_session:
+            return
+        page = self.edit_session.doc[self.edit_page_index]
+        self.edit_session.snapshot()
+        try:
+            if span is not None:
+                choice = replace_span_text(self.edit_session.doc, page, span, new_text, override)
+            else:
+                choice = insert_free_text(self.edit_session.doc, page, self._pending_new_point, new_text, override)
+        except Exception as exc:
+            self.edit_session.discard_last_snapshot()
+            self._show_error(sanitize_error_message(str(exc)))
+            return
+        self._render_edit_page()
+        if choice.used_fallback:
+            self.status_label.setText(
+                'Edição aplicada com fonte aproximada (a fonte original não pôde ser reutilizada).'
+            )
+        else:
+            self.status_label.setText('Edição aplicada.')
+
+    def _edit_undo(self) -> None:
+        if self.edit_session and self.edit_session.undo():
+            self._render_edit_page()
+        else:
+            self.status_label.setText('Nada para desfazer.')
+
+    def _save_edited_copy(self) -> None:
+        if not self.edit_session or not self.current_file:
+            return
+        try:
+            target = save_copy(self.edit_session.doc, self.current_file)
+        except OSError as exc:
+            self._show_error(sanitize_error_message(str(exc)))
+            return
+        QMessageBox.information(self, 'Salvo', f'Cópia editada salva em:\n{target}')
+
     # ── Sliders em tempo real ─────────────────────────────────────────────────
 
     def _on_speed_changed(self, value: int) -> None:
@@ -529,6 +683,7 @@ class MainWindow(QMainWindow):
             f'{kind} carregado: "{fname}"  •  {len(self.current_text):,} caracteres'
         )
         self._set_reading_buttons(True)
+        self.edit_mode_button.setEnabled(kind == 'PDF')
 
     def close_document(self) -> None:
         self.stop_reading()
@@ -547,6 +702,8 @@ class MainWindow(QMainWindow):
         self.start_page_spin.setSuffix('')
         self.start_page_spin.setEnabled(False)
         self._set_reading_buttons(False)
+        self.edit_mode_button.setEnabled(False)
+        self.edit_mode_button.setChecked(False)
         self._clear_temp_audio()
 
     # ── Leitura ───────────────────────────────────────────────────────────────
@@ -823,6 +980,10 @@ class MainWindow(QMainWindow):
         if self.speech_thread:
             self.speech_thread.stop_speech()
             self.speech_thread.wait(3000)
+        if self.edit_session:
+            # fecha o documento de edição aberto mesmo se o usuário nunca saiu do modo Editar PDF
+            self.edit_session.doc.close()
+            self.edit_session = None
         self._clear_temp_audio()
         event.accept()
 
