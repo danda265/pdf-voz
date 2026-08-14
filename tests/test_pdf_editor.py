@@ -7,7 +7,7 @@ import fitz
 import pytest
 
 from pdf_editor import (FormatOverride, TextSpan, resolve_font, spans_for_page, replace_span_text,
-                        insert_free_text, PDFEditError, open_for_edit, save_copy)
+                        insert_free_text, PDFEditError, open_for_edit, save_copy, EditSession)
 
 ARIAL_PATH = r'C:\Windows\Fonts\arial.ttf'
 
@@ -134,3 +134,18 @@ def test_save_copy_never_overwrites_original(sample_pdf):
     assert target != sample_pdf
     assert target.exists()
     assert hashlib.sha256(sample_pdf.read_bytes()).hexdigest() == hashlib.sha256(original_bytes_before).hexdigest()
+
+
+def test_undo_reverts_last_edit(sample_pdf):
+    doc = fitz.open(str(sample_pdf))
+    session = EditSession(doc)
+    page = session.doc[0]
+    span = next(s for s in spans_for_page(page) if s.text.strip() == 'Ola mundo')
+    session.snapshot()
+    replace_span_text(session.doc, page, span, 'Texto trocado')
+    assert 'Texto trocado' in session.doc[0].get_text()
+    assert session.undo() is True
+    assert 'Ola mundo' in session.doc[0].get_text()
+    assert 'Texto trocado' not in session.doc[0].get_text()
+    assert session.undo() is False
+    session.doc.close()

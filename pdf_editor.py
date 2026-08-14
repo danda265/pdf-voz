@@ -166,6 +166,27 @@ def open_for_edit(path: str) -> fitz.Document:
     return doc
 
 
+class EditSession:
+    def __init__(self, doc: fitz.Document):
+        self.doc = doc
+        self._undo_stack: List[bytes] = []
+
+    def snapshot(self) -> None:
+        self._undo_stack.append(self.doc.tobytes())
+
+    def discard_last_snapshot(self) -> None:
+        if self._undo_stack:
+            self._undo_stack.pop()
+
+    def undo(self) -> bool:
+        if not self._undo_stack:
+            return False
+        data = self._undo_stack.pop()
+        self.doc.close()
+        self.doc = fitz.open(stream=data, filetype='pdf')
+        return True
+
+
 def save_copy(doc: fitz.Document, original_path: str) -> Path:
     original = Path(original_path)
     target = original.with_name(f'{original.stem}_editado{original.suffix}')
