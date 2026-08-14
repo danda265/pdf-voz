@@ -5,7 +5,8 @@ import os
 import fitz
 import pytest
 
-from pdf_editor import FormatOverride, TextSpan, resolve_font, spans_for_page, replace_span_text
+from pdf_editor import (FormatOverride, TextSpan, resolve_font, spans_for_page, replace_span_text,
+                        insert_free_text)
 
 ARIAL_PATH = r'C:\Windows\Fonts\arial.ttf'
 
@@ -91,3 +92,14 @@ def test_replace_span_text_with_empty_string_deletes(sample_pdf):
     doc.close()
     assert 'Ola mundo' not in full_text
     assert 'Segunda linha de teste' in full_text
+
+
+def test_insert_free_text_adds_without_touching_existing_spans(sample_pdf):
+    doc = fitz.open(str(sample_pdf))
+    page = doc[0]
+    before = page.get_text()
+    insert_free_text(doc, page, (72, 700), 'Texto novo', FormatOverride(size=12.0, color=(0, 0, 0)))
+    after = page.get_text()
+    doc.close()
+    assert 'Texto novo' in after
+    assert before.strip() in after

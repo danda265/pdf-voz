@@ -136,3 +136,12 @@ def replace_span_text(doc: fitz.Document, page: fitz.Page, span: TextSpan, new_t
     page.insert_text(span.origin, new_text, fontname=choice.fontname,
                      fontsize=choice.size, color=choice.color)
     return choice
+
+
+def insert_free_text(doc: fitz.Document, page: fitz.Page, point: Tuple[float, float],
+                      text: str, override: FormatOverride) -> FontChoice:
+    choice = resolve_font(doc, page, None, override)
+    if choice.fontbuffer:
+        page.insert_font(fontname=choice.fontname, fontbuffer=choice.fontbuffer)
+    page.insert_text(point, text, fontname=choice.fontname, fontsize=choice.size, color=choice.color)
+    return choice
