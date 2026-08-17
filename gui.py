@@ -5,6 +5,7 @@ import itertools
 import re
 import sys
 import threading
+import traceback
 from pathlib import Path
 from typing import Optional, Tuple
 
@@ -601,7 +602,7 @@ class MainWindow(QMainWindow):
             avisos.append('alguma linha passou da largura do trecho original e pode '
                           'estar por cima do que vem depois — encurte o texto, quebre '
                           'em outra linha ou diminua a fonte')
-        if new_text.count('\n'):
+        if any('\n' in t for t in textos):
             avisos.append('as linhas extras descem sobre a área abaixo — confira se '
                           'não cobriram nada')
         if avisos:
@@ -1186,10 +1187,32 @@ def _documento_do_argv(argv: list[str]) -> Optional[str]:
     return None
 
 
+def _instalar_rede_de_seguranca(window: 'MainWindow') -> None:
+    """Impede que um erro inesperado feche o app levando as edições junto.
+
+    O PyQt6 aborta o processo quando uma exceção escapa de um slot — o app some da tela
+    sem aviso. Num editor isso é perda de trabalho: melhor mostrar o erro e deixar o
+    usuário salvar o que já fez."""
+    def tratar(tipo, valor, tb) -> None:
+        traceback.print_exception(tipo, valor, tb)
+        try:
+            QMessageBox.critical(
+                window, 'Erro inesperado',
+                sanitize_error_message(f'{tipo.__name__}: {valor}')
+                + '\n\nO aplicativo continua aberto. Se havia edições, '
+                  'use "Salvar cópia" antes de fechar.'
+            )
+        except Exception:
+            pass   # nunca deixar o próprio tratador derrubar o app
+
+    sys.excepthook = tratar
+
+
 def run_app() -> None:
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
     window = MainWindow()
+    _instalar_rede_de_seguranca(window)
     window.show()
     documento = _documento_do_argv(sys.argv)
     if documento:
