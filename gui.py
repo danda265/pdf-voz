@@ -517,8 +517,6 @@ class MainWindow(QMainWindow):
         page = self.edit_session.doc[self.edit_page_index]
         spans = spans_for_page(page)
         self.edit_scroll.canvas.show_page(page, spans)
-        # o popup precisa da largura para saber onde fica o centro ao centralizar
-        self.edit_popup.largura_pagina = page.rect.width
         self.edit_page_label.setText(
             f'Página {self.edit_page_index + 1} de {self.edit_session.doc.page_count}'
         )

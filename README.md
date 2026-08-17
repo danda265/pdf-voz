@@ -34,6 +34,11 @@ Com um PDF aberto, clique em **Editar PDF**. A página aparece como imagem:
 
 - **Clique em um trecho de texto** para abrir a caixa de edição — troque o texto, ou apague tudo para
   remover o trecho. A barra tem negrito, itálico, tamanho, cor e a lista de fontes.
+- **Enter** quebra a linha dentro da caixa; **Ctrl+Enter** confirma. O texto também quebra sozinho
+  quando chega na margem.
+- **Alinhar**: manter onde está, à esquerda, centralizado, à direita ou justificado. E **entrelinha**
+  simples, 1,5 ou dupla.
+- **Mover**: arraste o trecho na página, ou use as setas da caixa para ajuste fino.
 - **Adicionar texto** insere texto novo em um espaço em branco da página.
 - **Ctrl+Z** ou **Desfazer** volta a última alteração.
 - **Salvar cópia** grava `nome_editado.pdf` ao lado do original.
@@ -48,9 +53,9 @@ marque *"Sempre usar este aplicativo"*.
 
 - A edição funciona em **PDF nativo** (texto digital selecionável). PDF escaneado é imagem — dá para
   ler com OCR, mas não para editar o texto.
-- Não há quebra de linha automática: se o texto novo for mais longo que o trecho original, ele avança
-  sobre o que vem depois na mesma linha. O app avisa quando isso acontece; encurte o texto ou reduza a
-  fonte.
+- O texto quebra sozinho na margem, mas as linhas extras **descem sobre o que está abaixo** — o app
+  avisa quando o trecho passa a ocupar mais de uma linha. O conteúdo existente não é empurrado para
+  baixo: PDF não tem parágrafo fluido como o Word.
 - Texto novo entra apenas em área livre da página — não empurra o conteúdo existente.
 - Se a fonte original do PDF não puder ser reutilizada, o app usa a mais parecida instalada no sistema
   e avisa *"fonte aproximada"*.

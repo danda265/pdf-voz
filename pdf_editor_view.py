@@ -6,7 +6,8 @@ import fitz
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QFont, QImage, QMouseEvent, QPixmap
 from PyQt6.QtWidgets import (
-    QColorDialog, QFontComboBox, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton,
+    QColorDialog, QComboBox, QFontComboBox, QHBoxLayout, QLabel, QPlainTextEdit,
+    QPushButton,
     QScrollArea, QSpinBox, QToolButton, QVBoxLayout, QWidget,
 )
 
@@ -117,7 +118,7 @@ class SpanEditPopup(QWidget):
         self._color: Tuple[float, float, float] = (0.0, 0.0, 0.0)
         self._family_touched = False   # o usuário escolheu outra fonte nesta edição?
         self._deslocamento = [0.0, 0.0]
-        self.largura_pagina = 0.0      # preenchida pela janela ao trocar de página
+        self._alinhamento = None
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -201,10 +202,6 @@ class SpanEditPopup(QWidget):
             botao.setAutoRepeat(True)
             botao.clicked.connect(lambda _=False, ex=dx, ey=dy: self._nudge(ex, ey))
             posicao.addWidget(botao)
-        self.centralizar_btn = QPushButton('Centralizar na página')
-        self.centralizar_btn.setToolTip('Coloca o trecho no centro horizontal da página')
-        self.centralizar_btn.clicked.connect(self._centralizar)
-        posicao.addWidget(self.centralizar_btn)
         self.reset_pos_btn = QPushButton('Voltar')
         self.reset_pos_btn.setToolTip('Desfaz o deslocamento e volta à posição original')
         self.reset_pos_btn.clicked.connect(self._reset_posicao)
@@ -214,6 +211,35 @@ class SpanEditPopup(QWidget):
         self.deslocamento_lbl.setObjectName('Deslocamento')
         posicao.addWidget(self.deslocamento_lbl)
         layout.addLayout(posicao)
+
+        # Alinhamento e entrelinha — o equivalente ao grupo "Parágrafo" do Word.
+        paragrafo = QHBoxLayout()
+        paragrafo.addWidget(QLabel('Alinhar'))
+        self.alinhamento_btns = {}
+        for chave, rotulo, dica in (
+            (None, '⌸', 'Manter onde está (padrão)'),
+            ('esquerda', '⯇', 'Alinhar à esquerda da margem'),
+            ('centro', '≡', 'Centralizar'),
+            ('direita', '⯈', 'Alinhar à direita da margem'),
+            ('justificado', '☰', 'Justificar (estica até as duas margens)'),
+        ):
+            botao = QToolButton()
+            botao.setText(rotulo)
+            botao.setToolTip(dica)
+            botao.setCheckable(True)
+            botao.clicked.connect(lambda _=False, c=chave: self._escolher_alinhamento(c))
+            self.alinhamento_btns[chave] = botao
+            paragrafo.addWidget(botao)
+
+        paragrafo.addSpacing(10)
+        paragrafo.addWidget(QLabel('Entrelinha'))
+        self.entrelinha_combo = QComboBox()
+        self.entrelinha_combo.setToolTip('Espaço entre as linhas do trecho')
+        for rotulo, valor in (('Original', None), ('Simples', 1.0), ('1,5', 1.5), ('Dupla', 2.0)):
+            self.entrelinha_combo.addItem(rotulo, valor)
+        paragrafo.addWidget(self.entrelinha_combo)
+        paragrafo.addStretch(1)
+        layout.addLayout(paragrafo)
 
         # Mostra a fonte que o PDF declara para o trecho — sem isso não há como saber
         # qual escolher na lista quando o casamento automático não acerta.
@@ -236,7 +262,8 @@ class SpanEditPopup(QWidget):
         self._span = span
         self._deslocamento = [float(deslocamento[0]), float(deslocamento[1])]
         self._atualizar_deslocamento_lbl()
-        self.centralizar_btn.setEnabled(True)
+        self._escolher_alinhamento(None)
+        self.entrelinha_combo.setCurrentIndex(0)
         self.text_input.setPlainText(span.text)
         self.bold_btn.setChecked(span.bold)
         self.italic_btn.setChecked(span.italic)
@@ -265,7 +292,8 @@ class SpanEditPopup(QWidget):
         self._deslocamento = [0.0, 0.0]
         self._atualizar_deslocamento_lbl()
         # Texto novo já é colocado onde o usuário clicou; mover/centralizar não se aplica.
-        self.centralizar_btn.setEnabled(False)
+        self._escolher_alinhamento(None)
+        self.entrelinha_combo.setCurrentIndex(0)
         self.text_input.clear()
         self.bold_btn.setChecked(False)
         self.italic_btn.setChecked(False)
@@ -284,14 +312,11 @@ class SpanEditPopup(QWidget):
         self._deslocamento[1] += dy
         self._atualizar_deslocamento_lbl()
 
-    def _centralizar(self) -> None:
-        """Centraliza o trecho na largura da página, virando deslocamento horizontal."""
-        if self._span is None or self.largura_pagina <= 0:
-            return
-        x0, _, x1, _ = self._span.bbox
-        destino_x = (self.largura_pagina - (x1 - x0)) / 2
-        self._deslocamento[0] = destino_x - x0
-        self._atualizar_deslocamento_lbl()
+    def _escolher_alinhamento(self, chave) -> None:
+        """Botões de alinhamento funcionam como rádio: só um fica marcado."""
+        self._alinhamento = chave
+        for c, botao in self.alinhamento_btns.items():
+            botao.setChecked(c == chave)
 
     def _reset_posicao(self) -> None:
         self._deslocamento = [0.0, 0.0]
@@ -324,6 +349,8 @@ class SpanEditPopup(QWidget):
             # que o QFontComboBox resolve para uma família genérica — mandá-lo sempre
             # impediria o motor de reencontrar e reutilizar a fonte embutida original.
             family=self.font_combo.currentFont().family() if self._family_touched else None,
+            alinhamento=self._alinhamento,
+            entrelinha=self.entrelinha_combo.currentData(),
         )
         self.confirmed.emit(self._span, self.text_input.toPlainText(), override,
                             tuple(self._deslocamento))

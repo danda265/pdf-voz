@@ -24,6 +24,15 @@ class TextSpan:
     serifed: bool
 
 
+# Alinhamentos aceitos em FormatOverride.alinhamento. None = mantém onde está.
+ALINHAMENTOS = {
+    'esquerda': fitz.TEXT_ALIGN_LEFT,
+    'centro': fitz.TEXT_ALIGN_CENTER,
+    'direita': fitz.TEXT_ALIGN_RIGHT,
+    'justificado': fitz.TEXT_ALIGN_JUSTIFY,
+}
+
+
 @dataclass
 class FormatOverride:
     bold: Optional[bool] = None
@@ -31,6 +40,8 @@ class FormatOverride:
     size: Optional[float] = None
     color: Optional[Color] = None
     family: Optional[str] = None
+    alinhamento: Optional[str] = None   # chave de ALINHAMENTOS; None = posição original
+    entrelinha: Optional[float] = None  # multiplicador do tamanho da fonte (1.0, 1.5, 2.0...)
 
 
 @dataclass
@@ -40,7 +51,7 @@ class FontChoice:
     size: float
     color: Color
     used_fallback: bool
-    overflowed: bool = False   # o texto novo passou da largura que o trecho original ocupava
+    overflowed: bool = False   # o texto novo ocupou mais espaço vertical que o trecho original
 
 
 def _int_to_rgb(value: int) -> Color:
@@ -204,19 +215,117 @@ def resolve_font(doc: fitz.Document, page: fitz.Page, span: Optional[TextSpan],
         serifed = span.serifed
     else:
         serifed = any(hint in (family_hint or '').lower() for hint in _SERIF_HINTS)
-    table = _BASE14_SERIF if serifed else _BASE14_SANS
-    return FontChoice(table[(bold, italic)], None, size, color, used_fallback=True)
+    base14 = (_BASE14_SERIF if serifed else _BASE14_SANS)[(bold, italic)]
+    # Carrega o proprio arquivo da fonte em vez de citar o nome: se a pagina ja tiver um
+    # recurso com esse nome, o PyMuPDF reusa o dela, cujas metricas nao batem com as que
+    # usamos para posicionar — e o texto desce ~1,6 pt em relacao a linha original.
+    try:
+        return FontChoice(f'PV{base14}', fitz.Font(base14).buffer, size, color,
+                          used_fallback=True)
+    except Exception:
+        return FontChoice(base14, None, size, color, used_fallback=True)
+
+
+def area_de_conteudo(page: fitz.Page) -> fitz.Rect:
+    """Retangulo que envolve todo o texto da pagina — a "mancha" do documento.
+
+    E a referencia para alinhar: centralizar tem de ser em relacao a area util onde o
+    documento escreve, nao a folha inteira (senao um texto com margens largas ficaria
+    visivelmente torto em relacao ao resto)."""
+    uniao = None
+    for bloco in page.get_text('dict').get('blocks', []):
+        if not bloco.get('lines'):
+            continue
+        r = fitz.Rect(bloco['bbox'])
+        uniao = r if uniao is None else uniao | r
+    return uniao if uniao is not None else fitz.Rect(page.rect)
+
+
+def _metricas_da_caixa(choice: FontChoice, entrelinha: Optional[float]) -> Tuple[float, float]:
+    """(altura de uma linha, folga fixa) que o insert_textbox consome.
+
+    Medido: a caixa precisa de `n * (asc - desc) * tamanho + |desc| * tamanho`. Usar um
+    chute menor que isso faz ate um texto de uma linha "nao caber", a caixa crescer e o
+    app acusar transbordo que nao existe."""
+    asc, desc = _metricas_da_fonte(choice)
+    altura_linha = choice.size * (entrelinha if entrelinha else (asc - desc))
+    return altura_linha, abs(desc) * choice.size
+
+
+def _metricas_da_fonte(choice: FontChoice) -> Tuple[float, float]:
+    """(ascendente, descendente) da fonte escolhida, como fracao do tamanho."""
+    try:
+        fonte = (fitz.Font(fontbuffer=choice.fontbuffer) if choice.fontbuffer
+                 else fitz.Font(choice.fontname))
+        return float(fonte.ascender), float(fonte.descender)
+    except Exception:
+        return 1.0, -0.3
+
+
+def _ascendente(choice: FontChoice) -> float:
+    """Fracao do tamanho da fonte acima da linha de base.
+
+    Medido: o insert_textbox coloca a primeira linha de base exatamente em
+    `rect.y0 + ascender * tamanho`. Ancorar por essa conta (e nao pelo topo do bbox
+    antigo) mantem o texto no lugar mesmo quando a fonte nova tem altura diferente da
+    original — que e o caso sempre que o motor cai no substituto."""
+    return _metricas_da_fonte(choice)[0]
+
+
+def _caixa_do_texto(page: fitz.Page, span: TextSpan, choice: FontChoice,
+                    alinhamento: Optional[str], deslocamento: Tuple[float, float],
+                    entrelinha: Optional[float] = None) -> fitz.Rect:
+    """Retangulo onde o texto novo sera escrito.
+
+    Sem alinhamento escolhido, a caixa comeca na posicao original do trecho — assim o
+    texto cai exatamente onde estava. Com alinhamento, ela ocupa a largura da mancha do
+    documento, que e o que faz "centralizar" e "justificar" baterem com o resto da pagina."""
+    conteudo = area_de_conteudo(page)
+    x0 = span.bbox[0] if alinhamento in (None, '') else min(conteudo.x0, span.bbox[0])
+    x1 = max(conteudo.x1, span.bbox[2])
+    altura_linha, folga = _metricas_da_caixa(choice, entrelinha)
+    topo = span.origin[1] - _ascendente(choice) * choice.size
+    return fitz.Rect(x0 + deslocamento[0], topo + deslocamento[1],
+                     x1 + deslocamento[0], topo + altura_linha + folga + deslocamento[1])
+
+
+def _escrever_na_caixa(page: fitz.Page, caixa: fitz.Rect, texto: str, choice: FontChoice,
+                       alinhamento: Optional[str], entrelinha: Optional[float]) -> Tuple[bool, int]:
+    """Escreve dentro da caixa, crescendo-a para baixo ate o texto caber.
+
+    O insert_textbox NAO escreve nada quando o texto nao cabe (retorna negativo) — com a
+    redacao ja aplicada, aceitar isso apagaria o trecho sem por nada no lugar. Por isso
+    cresce e tenta de novo, mas nunca alem do fim da pagina: passar dali escreveria texto
+    invisivel, que e pior que um erro claro. Devolve (coube, linhas_a_mais)."""
+    alvo = fitz.Rect(caixa)
+    altura_linha, folga = _metricas_da_caixa(choice, entrelinha)
+    limite = page.rect.y1 - 2
+    while True:
+        sobra = page.insert_textbox(
+            alvo, texto, fontname=choice.fontname, fontsize=choice.size,
+            color=choice.color, align=ALINHAMENTOS.get(alinhamento or '', fitz.TEXT_ALIGN_LEFT),
+            lineheight=entrelinha,
+        )
+        if sobra >= 0:
+            # o que o texto de fato ocupou, descontada a folga fixa da caixa
+            usado = max(0.0, (alvo.height - sobra) - folga)
+            return True, max(1, round(usado / altura_linha))
+        if alvo.y1 >= limite:
+            return False, 0
+        # sobra negativa = exatamente quanto faltou de altura
+        alvo.y1 = min(limite, alvo.y1 + (-sobra) + altura_linha)
 
 
 def replace_span_text(doc: fitz.Document, page: fitz.Page, span: TextSpan, new_text: str,
                       override: Optional[FormatOverride] = None,
                       deslocamento: Tuple[float, float] = (0.0, 0.0)) -> FontChoice:
-    """Troca o texto de um span. `deslocamento` move o texto novo em relacao a posicao
-    original, em pontos do PDF (x cresce para a direita, y para baixo). `new_text` pode
-    conter '\\n': o PyMuPDF quebra em varias linhas descendo a partir da origem."""
+    """Troca o texto de um span. `deslocamento` move o texto em relacao a posicao original
+    (pontos do PDF). `new_text` pode conter '\\n' para quebra forcada; o texto tambem quebra
+    sozinho ao chegar na borda da caixa. Alinhamento e entrelinha vem do `override`."""
     # A fonte e resolvida ANTES de redigir: resolver le fontes embutidas do documento e
     # pode falhar. Redigindo primeiro, uma falha aqui deixaria o span apagado sem
     # substituto — texto perdido. Falhando antes, a pagina fica intacta.
+    override = override or FormatOverride()
     choice = resolve_font(doc, page, span, override, new_text) if new_text else None
     page.add_redact_annot(fitz.Rect(span.bbox), fill=(1, 1, 1))
     page.apply_redactions()
@@ -224,31 +333,16 @@ def replace_span_text(doc: fitz.Document, page: fitz.Page, span: TextSpan, new_t
         return FontChoice('', None, span.size, span.color, used_fallback=False)
     if choice.fontbuffer:
         page.insert_font(fontname=choice.fontname, fontbuffer=choice.fontbuffer)
-    destino = (span.origin[0] + deslocamento[0], span.origin[1] + deslocamento[1])
-    page.insert_text(destino, new_text, fontname=choice.fontname,
-                     fontsize=choice.size, color=choice.color)
-    choice.overflowed = _excede_largura(new_text, choice, span)
+    caixa = _caixa_do_texto(page, span, choice, override.alinhamento, deslocamento,
+                            override.entrelinha)
+    coube, linhas_extras = _escrever_na_caixa(page, caixa, new_text, choice,
+                                              override.alinhamento, override.entrelinha)
+    if not coube:
+        raise PDFEditError(
+            'O texto novo não coube na página. Encurte o texto ou reduza o tamanho da fonte.'
+        )
+    choice.overflowed = linhas_extras > 1
     return choice
-
-
-def _excede_largura(new_text: str, choice: FontChoice, span: TextSpan) -> bool:
-    """O texto novo passa da largura que o trecho original ocupava?
-
-    Mede a linha MAIS LARGA: com o texto quebrado em varias linhas, o que importa e se
-    alguma delas estoura, nao o comprimento total.
-
-    Serve só para avisar o usuário — nada é encolhido ou truncado automaticamente.
-    Fontes embutidas não são mensuráveis por get_text_length; nesse caso não avisamos
-    (melhor silêncio do que um alarme falso)."""
-    disponivel = span.bbox[2] - span.bbox[0]
-    try:
-        for linha in new_text.split('\n'):
-            if fitz.get_text_length(linha, fontname=choice.fontname,
-                                    fontsize=choice.size) > disponivel:
-                return True
-    except Exception:
-        return False
-    return False
 
 
 def insert_free_text(doc: fitz.Document, page: fitz.Page, point: Tuple[float, float],

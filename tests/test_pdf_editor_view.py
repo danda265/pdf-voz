@@ -82,19 +82,50 @@ def test_voltar_zera_o_deslocamento(qtbot):
     assert blocker.args[3] == (0.0, 0.0)
 
 
-def test_centralizar_calcula_deslocamento_para_o_meio_da_pagina(qtbot):
-    """Span de 72 a 150 numa página de 595 pt: o centro pede deslocamento de +186,5."""
+def test_alinhamento_vai_no_override_e_botoes_funcionam_como_radio(qtbot):
     popup = SpanEditPopup(None)
     qtbot.addWidget(popup)
-    popup.largura_pagina = 595.0
     popup.open_for_span(_make_span(), popup.pos())
 
-    popup._centralizar()
+    popup._escolher_alinhamento('centro')
+    assert popup.alinhamento_btns['centro'].isChecked() is True
 
-    dx = popup._deslocamento[0]
-    largura_span = 150.0 - 72.0
-    assert abs((72.0 + dx) - (595.0 - largura_span) / 2) < 0.01
-    assert popup._deslocamento[1] == 0.0   # centralizar não mexe na vertical
+    popup._escolher_alinhamento('direita')
+    assert popup.alinhamento_btns['direita'].isChecked() is True
+    assert popup.alinhamento_btns['centro'].isChecked() is False   # só um marcado
+
+    with qtbot.waitSignal(popup.confirmed, timeout=1000) as blocker:
+        popup._confirm()
+    assert blocker.args[2].alinhamento == 'direita'
+
+
+def test_entrelinha_escolhida_vai_no_override(qtbot):
+    popup = SpanEditPopup(None)
+    qtbot.addWidget(popup)
+    popup.open_for_span(_make_span(), popup.pos())
+
+    indice_dupla = popup.entrelinha_combo.findText('Dupla')
+    popup.entrelinha_combo.setCurrentIndex(indice_dupla)
+
+    with qtbot.waitSignal(popup.confirmed, timeout=1000) as blocker:
+        popup._confirm()
+    assert blocker.args[2].entrelinha == 2.0
+
+
+def test_abrir_outro_trecho_zera_alinhamento_e_entrelinha(qtbot):
+    """Estado de um trecho não pode vazar para a edição do trecho seguinte."""
+    popup = SpanEditPopup(None)
+    qtbot.addWidget(popup)
+    popup.open_for_span(_make_span(), popup.pos())
+    popup._escolher_alinhamento('justificado')
+    popup.entrelinha_combo.setCurrentIndex(popup.entrelinha_combo.findText('Dupla'))
+
+    popup.open_for_span(_make_span(), popup.pos())
+
+    with qtbot.waitSignal(popup.confirmed, timeout=1000) as blocker:
+        popup._confirm()
+    assert blocker.args[2].alinhamento is None
+    assert blocker.args[2].entrelinha is None
 
 
 def test_arrasto_no_canvas_emite_span_moved_em_pontos_do_pdf(qtbot):

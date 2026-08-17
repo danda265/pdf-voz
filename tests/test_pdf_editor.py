@@ -62,8 +62,10 @@ def test_resolve_font_falls_back_when_family_not_embedded(sample_pdf):
     # Sem fonte embutida nem instalada com esse nome, sobra o base14 — e o usuario
     # precisa ser avisado de que o desenho da letra e so aproximado.
     assert choice.used_fallback is True
-    assert choice.fontbuffer is None
-    assert choice.fontname == 'helv'   # sem serifa, sem negrito, sem italico
+    # O base14 vai com o proprio arquivo da fonte, sob nome exclusivo ('PV...'): citar so
+    # o nome faria a pagina reusar um recurso homonimo de metrica diferente.
+    assert choice.fontname == 'PVhelv'   # sem serifa, sem negrito, sem italico
+    assert choice.fontbuffer
 
 
 def test_resolve_font_uses_real_system_font_when_family_is_installed(sample_pdf):
@@ -90,7 +92,7 @@ def test_resolve_font_fallback_prefers_span_serifed_over_name_heuristic(sample_p
     )
     choice = resolve_font(doc, page, span, override=None)
     doc.close()
-    assert choice.fontname in ('tiro', 'tibo', 'tiit', 'tibi')
+    assert choice.fontname in ('PVtiro', 'PVtibo', 'PVtiit', 'PVtibi')
 
 
 def test_replace_span_text_changes_only_target_span(sample_pdf):
@@ -251,16 +253,18 @@ def test_replace_span_text_keeps_original_when_font_resolution_fails(sample_pdf,
     assert 'Segunda linha de teste' in texto
 
 
-def test_replace_span_text_flags_overflow_when_new_text_is_wider(sample_pdf):
-    """Texto novo mais largo que o trecho original e sinalizado (mas nao alterado)."""
+def test_replace_span_text_quebra_sozinho_texto_mais_longo(sample_pdf):
+    """Texto longo demais quebra sozinho na largura da caixa, sem perder nada, e avisa
+    que passou a ocupar mais linhas que o trecho original."""
     doc = fitz.open(str(sample_pdf))
     page = doc[0]
     span = next(s for s in spans_for_page(page) if s.text.strip() == 'Ola mundo')
-    choice = replace_span_text(doc, page, span, 'Um texto substancialmente mais longo que o original')
+    longo = 'Um texto substancialmente mais longo que o original'
+    choice = replace_span_text(doc, page, span, longo)
     texto = page.get_text()
     doc.close()
-    assert choice.overflowed is True
-    assert 'Um texto substancialmente mais longo que o original' in texto   # nada foi truncado
+    assert choice.overflowed is True                  # ocupou linhas a mais
+    assert ' '.join(texto.split()).count(longo) == 1   # quebrou, mas nao truncou nada
 
 
 def test_replace_span_text_does_not_flag_overflow_when_new_text_fits(sample_pdf):
@@ -377,12 +381,88 @@ def test_replace_span_text_quebra_em_varias_linhas(sample_pdf):
     assert abs(segunda.origin[0] - primeira.origin[0]) < 1.0   # alinhadas a esquerda
 
 
-def test_overflow_mede_a_linha_mais_larga_nao_o_texto_todo(sample_pdf):
-    """Texto longo quebrado em linhas curtas nao deve disparar o aviso de transbordo."""
+def test_overflow_sinaliza_quando_ocupa_mais_linhas(sample_pdf):
+    """Texto em varias linhas desce sobre a area de baixo — o usuario precisa saber."""
     doc = fitz.open(str(sample_pdf))
     page = doc[0]
     span = next(s for s in spans_for_page(page) if s.text.strip() == 'Ola mundo')
 
     choice = replace_span_text(doc, page, span, 'curto\ncurto\ncurto')
     doc.close()
-    assert choice.overflowed is False
+    assert choice.overflowed is True
+
+
+def test_alinhamento_centro_centraliza_na_mancha_do_documento(sample_pdf):
+    doc = fitz.open(str(sample_pdf))
+    page = doc[0]
+    from pdf_editor import area_de_conteudo
+    mancha = area_de_conteudo(page)
+    span = next(s for s in spans_for_page(page) if s.text.strip() == 'Ola mundo')
+
+    replace_span_text(doc, page, span, 'Centro', FormatOverride(alinhamento='centro'))
+
+    novo = next(s for s in spans_for_page(page) if s.text.strip() == 'Centro')
+    doc.close()
+    centro_texto = (novo.bbox[0] + novo.bbox[2]) / 2
+    assert abs(centro_texto - (mancha.x0 + mancha.x1) / 2) < 2.0
+
+
+def test_alinhamento_direita_encosta_na_borda_da_mancha(sample_pdf):
+    doc = fitz.open(str(sample_pdf))
+    page = doc[0]
+    from pdf_editor import area_de_conteudo
+    mancha = area_de_conteudo(page)
+    span = next(s for s in spans_for_page(page) if s.text.strip() == 'Ola mundo')
+
+    replace_span_text(doc, page, span, 'Direita', FormatOverride(alinhamento='direita'))
+
+    novo = next(s for s in spans_for_page(page) if s.text.strip() == 'Direita')
+    doc.close()
+    assert abs(novo.bbox[2] - mancha.x1) < 3.0
+
+
+def test_sem_alinhamento_o_texto_fica_exatamente_onde_estava(sample_pdf):
+    """Manter a posicao original e o padrao — alinhar tem de ser escolha explicita."""
+    doc = fitz.open(str(sample_pdf))
+    page = doc[0]
+    span = next(s for s in spans_for_page(page) if s.text.strip() == 'Ola mundo')
+    origem_antes = span.origin
+
+    replace_span_text(doc, page, span, 'Trocado')
+
+    novo = next(s for s in spans_for_page(page) if s.text.strip() == 'Trocado')
+    doc.close()
+    assert abs(novo.origin[0] - origem_antes[0]) < 0.5
+    assert abs(novo.origin[1] - origem_antes[1]) < 0.5
+
+
+def test_entrelinha_maior_afasta_as_linhas(sample_pdf):
+    doc = fitz.open(str(sample_pdf))
+
+    def distancia_entre_linhas(entrelinha):
+        d = fitz.open(str(sample_pdf))
+        pg = d[0]
+        sp = next(s for s in spans_for_page(pg) if s.text.strip() == 'Ola mundo')
+        replace_span_text(d, pg, sp, 'linha um\nlinha dois',
+                          FormatOverride(entrelinha=entrelinha))
+        spans = spans_for_page(pg)
+        um = next(s for s in spans if s.text.strip() == 'linha um')
+        dois = next(s for s in spans if s.text.strip() == 'linha dois')
+        d.close()
+        return dois.origin[1] - um.origin[1]
+
+    doc.close()
+    apertada, folgada = distancia_entre_linhas(1.0), distancia_entre_linhas(2.0)
+    assert folgada > apertada * 1.5
+
+
+def test_texto_que_nao_cabe_de_jeito_nenhum_levanta_erro_em_vez_de_sumir(sample_pdf):
+    """insert_textbox nao escreve nada quando nao cabe. Com a redacao ja feita, aceitar
+    isso apagaria o trecho — melhor erro explicito, que a janela trata restaurando."""
+    doc = fitz.open(str(sample_pdf))
+    page = doc[0]
+    span = next(s for s in spans_for_page(page) if s.text.strip() == 'Ola mundo')
+
+    with pytest.raises(PDFEditError):
+        replace_span_text(doc, page, span, 'palavra ' * 4000, FormatOverride(size=60.0))
+    doc.close()
