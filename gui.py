@@ -29,7 +29,7 @@ from pdf_editor import (
 )
 from pdf_editor_view import PageScrollArea, SpanEditPopup
 
-APP_VERSION = '1.1.0'   # fonte única da versão — o instalador (.iss) deve usar o mesmo valor
+APP_VERSION = '1.2.0'   # fonte única da versão — o instalador (.iss) deve usar o mesmo valor
 
 _FONT_MIN, _FONT_MAX, _FONT_DEFAULT = 12, 28, 15
 
