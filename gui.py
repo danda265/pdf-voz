@@ -1137,9 +1137,24 @@ def _system_is_dark() -> bool:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 
+def _documento_do_argv(argv: list[str]) -> Optional[str]:
+    """Documento passado na linha de comando — é assim que o Windows entrega o arquivo
+    quando o usuário dá duplo clique nele com o PDF VOZ associado."""
+    for arg in argv[1:]:
+        if arg.startswith('-'):
+            continue
+        caminho = Path(arg)
+        if caminho.suffix.lower() in _SUPPORTED_EXTS and caminho.is_file():
+            return str(caminho.resolve())
+    return None
+
+
 def run_app() -> None:
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
     window = MainWindow()
     window.show()
+    documento = _documento_do_argv(sys.argv)
+    if documento:
+        window._load_file(documento)
     sys.exit(app.exec())
