@@ -229,3 +229,24 @@ def test_replace_span_text_keeps_original_when_font_resolution_fails(sample_pdf,
     doc.close()
     assert 'Ola mundo' in texto
     assert 'Segunda linha de teste' in texto
+
+
+def test_replace_span_text_flags_overflow_when_new_text_is_wider(sample_pdf):
+    """Texto novo mais largo que o trecho original e sinalizado (mas nao alterado)."""
+    doc = fitz.open(str(sample_pdf))
+    page = doc[0]
+    span = next(s for s in spans_for_page(page) if s.text.strip() == 'Ola mundo')
+    choice = replace_span_text(doc, page, span, 'Um texto substancialmente mais longo que o original')
+    texto = page.get_text()
+    doc.close()
+    assert choice.overflowed is True
+    assert 'Um texto substancialmente mais longo que o original' in texto   # nada foi truncado
+
+
+def test_replace_span_text_does_not_flag_overflow_when_new_text_fits(sample_pdf):
+    doc = fitz.open(str(sample_pdf))
+    page = doc[0]
+    span = next(s for s in spans_for_page(page) if s.text.strip() == 'Ola mundo')
+    choice = replace_span_text(doc, page, span, 'Oi')
+    doc.close()
+    assert choice.overflowed is False

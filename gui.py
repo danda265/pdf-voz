@@ -560,10 +560,15 @@ class MainWindow(QMainWindow):
             self._show_error(sanitize_error_message(str(exc)))
             return
         self._render_edit_page()
+        avisos = []
         if choice.used_fallback:
-            self.status_label.setText(
-                'Edição aplicada com fonte aproximada (a fonte original não pôde ser reutilizada).'
-            )
+            avisos.append('fonte aproximada (a original não pôde ser reutilizada)')
+        if choice.overflowed:
+            avisos.append('o texto novo passou da largura do trecho original e pode '
+                          'estar por cima do que vem depois — encurte o texto ou '
+                          'diminua o tamanho da fonte')
+        if avisos:
+            self.status_label.setText('Edição aplicada — ' + '; '.join(avisos) + '.')
         else:
             self.status_label.setText('Edição aplicada.')
 

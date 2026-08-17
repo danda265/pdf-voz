@@ -39,6 +39,7 @@ class FontChoice:
     size: float
     color: Color
     used_fallback: bool
+    overflowed: bool = False   # o texto novo passou da largura que o trecho original ocupava
 
 
 def _int_to_rgb(value: int) -> Color:
@@ -139,7 +140,22 @@ def replace_span_text(doc: fitz.Document, page: fitz.Page, span: TextSpan, new_t
         page.insert_font(fontname=choice.fontname, fontbuffer=choice.fontbuffer)
     page.insert_text(span.origin, new_text, fontname=choice.fontname,
                      fontsize=choice.size, color=choice.color)
+    choice.overflowed = _excede_largura(new_text, choice, span)
     return choice
+
+
+def _excede_largura(new_text: str, choice: FontChoice, span: TextSpan) -> bool:
+    """O texto novo passa da largura que o trecho original ocupava?
+
+    Serve só para avisar o usuário — nada é encolhido ou truncado automaticamente.
+    Fontes embutidas não são mensuráveis por get_text_length; nesse caso não avisamos
+    (melhor silêncio do que um alarme falso)."""
+    try:
+        largura_nova = fitz.get_text_length(new_text, fontname=choice.fontname,
+                                            fontsize=choice.size)
+    except Exception:
+        return False
+    return largura_nova > (span.bbox[2] - span.bbox[0])
 
 
 def insert_free_text(doc: fitz.Document, page: fitz.Page, point: Tuple[float, float],
