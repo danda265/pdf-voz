@@ -250,3 +250,28 @@ def test_replace_span_text_does_not_flag_overflow_when_new_text_fits(sample_pdf)
     choice = replace_span_text(doc, page, span, 'Oi')
     doc.close()
     assert choice.overflowed is False
+
+
+def test_replace_span_text_avoids_subset_font_that_cannot_draw_the_text(subset_font_pdf):
+    """Fonte embutida como subset sem cmap nao pode ser reusada: sairiam caixinhas."""
+    doc = fitz.open(str(subset_font_pdf))
+    page = doc[0]
+    span = spans_for_page(page)[0]
+    choice = replace_span_text(doc, page, span, 'texto novo legivel')
+    texto = page.get_text()
+    doc.close()
+    assert choice.used_fallback is True          # caiu no base14 em vez do subset quebrado
+    assert choice.fontbuffer is None
+    assert 'texto novo legivel' in texto
+
+
+def test_desenha_o_texto_rejects_subset_without_usable_cmap(subset_font_pdf):
+    from pdf_editor import _desenha_o_texto, _embedded_font_buffer
+
+    doc = fitz.open(str(subset_font_pdf))
+    page = doc[0]
+    span = spans_for_page(page)[0]
+    _name, buf = _embedded_font_buffer(doc, page, span.font_name, span.bold, span.italic)
+    doc.close()
+    assert buf is not None                        # a fonte embutida É encontrada...
+    assert _desenha_o_texto(buf, 'abc') is False   # ...mas não consegue desenhar o texto

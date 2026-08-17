@@ -105,8 +105,24 @@ def _embedded_font_buffer(doc: fitz.Document, page: fitz.Page, family_hint: Opti
     return None, None
 
 
+def _desenha_o_texto(fontbuffer: bytes, text: str) -> bool:
+    """A fonte embutida consegue mesmo desenhar este texto?
+
+    PDFs de Word/Distiller embutem a fonte como *subset*, muitas vezes sem tabela de
+    mapeamento unicode utilizavel. Reusar uma dessas para escrever texto novo desenha
+    caixinhas vazias no lugar das letras. Checar antes evita entregar isso ao usuario —
+    quando nao cobre, o chamador cai no fallback e avisa 'fonte aproximada'."""
+    if not text:
+        return True
+    try:
+        fonte = fitz.Font(fontbuffer=fontbuffer)
+    except Exception:
+        return False
+    return all(fonte.has_glyph(ord(ch)) for ch in text if not ch.isspace())
+
+
 def resolve_font(doc: fitz.Document, page: fitz.Page, span: Optional[TextSpan],
-                  override: Optional[FormatOverride]) -> FontChoice:
+                  override: Optional[FormatOverride], text: str = '') -> FontChoice:
     override = override or FormatOverride()
     bold = override.bold if override.bold is not None else (span.bold if span else False)
     italic = override.italic if override.italic is not None else (span.italic if span else False)
@@ -115,7 +131,7 @@ def resolve_font(doc: fitz.Document, page: fitz.Page, span: Optional[TextSpan],
     family_hint = override.family if override.family else (span.font_name if span else None)
 
     fontname, fontbuffer = _embedded_font_buffer(doc, page, family_hint, bold, italic)
-    if fontbuffer:
+    if fontbuffer and _desenha_o_texto(fontbuffer, text):
         return FontChoice(fontname, fontbuffer, size, color, used_fallback=False)
 
     if span is not None and not override.family:
@@ -131,7 +147,7 @@ def replace_span_text(doc: fitz.Document, page: fitz.Page, span: TextSpan, new_t
     # A fonte e resolvida ANTES de redigir: resolver le fontes embutidas do documento e
     # pode falhar. Redigindo primeiro, uma falha aqui deixaria o span apagado sem
     # substituto — texto perdido. Falhando antes, a pagina fica intacta.
-    choice = resolve_font(doc, page, span, override) if new_text else None
+    choice = resolve_font(doc, page, span, override, new_text) if new_text else None
     page.add_redact_annot(fitz.Rect(span.bbox), fill=(1, 1, 1))
     page.apply_redactions()
     if not new_text:
@@ -160,7 +176,7 @@ def _excede_largura(new_text: str, choice: FontChoice, span: TextSpan) -> bool:
 
 def insert_free_text(doc: fitz.Document, page: fitz.Page, point: Tuple[float, float],
                       text: str, override: FormatOverride) -> FontChoice:
-    choice = resolve_font(doc, page, None, override)
+    choice = resolve_font(doc, page, None, override, text)
     if choice.fontbuffer:
         page.insert_font(fontname=choice.fontname, fontbuffer=choice.fontbuffer)
     page.insert_text(point, text, fontname=choice.fontname, fontsize=choice.size, color=choice.color)
