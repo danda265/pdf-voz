@@ -504,6 +504,8 @@ class MainWindow(QMainWindow):
 
     def _exit_edit_mode(self) -> None:
         self.stack.setCurrentIndex(0)
+        self.add_text_button.setChecked(False)   # não deixa o modo "Adicionar texto" preso
+        self.edit_page_index = 0
         if self.edit_session:
             self.edit_session.doc.close()
             self.edit_session = None
@@ -550,7 +552,11 @@ class MainWindow(QMainWindow):
             else:
                 choice = insert_free_text(self.edit_session.doc, page, self._pending_new_point, new_text, override)
         except Exception as exc:
-            self.edit_session.discard_last_snapshot()
+            # Restaura o snapshot em vez de descartá-lo: a falha pode ter acontecido
+            # com o documento já parcialmente alterado, e descartar deixaria o dano
+            # sem nenhuma forma de desfazer.
+            self.edit_session.undo()
+            self._render_edit_page()
             self._show_error(sanitize_error_message(str(exc)))
             return
         self._render_edit_page()
@@ -560,6 +566,11 @@ class MainWindow(QMainWindow):
             )
         else:
             self.status_label.setText('Edição aplicada.')
+
+    def _undo_shortcut(self) -> None:
+        """Ctrl+Z só desfaz edição de PDF; no modo leitura o atalho não faz nada."""
+        if self.stack.currentIndex() == 1:
+            self._edit_undo()
 
     def _edit_undo(self) -> None:
         if self.edit_session and self.edit_session.undo():
@@ -572,7 +583,9 @@ class MainWindow(QMainWindow):
             return
         try:
             target = save_copy(self.edit_session.doc, self.current_file)
-        except OSError as exc:
+        except Exception as exc:
+            # O fitz levanta erros próprios (FzErrorSystem etc.) que não herdam de
+            # OSError — capturar só OSError deixaria a falha ao salvar sem aviso.
             self._show_error(sanitize_error_message(str(exc)))
             return
         QMessageBox.information(self, 'Salvo', f'Cópia editada salva em:\n{target}')
@@ -650,6 +663,9 @@ class MainWindow(QMainWindow):
 
     def _load_file(self, path: str) -> None:
         self.stop_reading()
+        # Sai do modo edição antes de trocar de arquivo: manter a sessão antiga aberta
+        # apontaria o "Salvar cópia" para o documento anterior gravado com o nome do novo.
+        self.edit_mode_button.setChecked(False)
         self.current_file = path
         fname = Path(path).name
         self.editor.setPlainText(f'Carregando "{fname}"...')
@@ -955,6 +971,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence('Ctrl+O'), self).activated.connect(self.open_document)
         QShortcut(QKeySequence('Ctrl+W'), self).activated.connect(self.close_document)
         QShortcut(QKeySequence('Ctrl+E'), self).activated.connect(self.export_mp3)
+        QShortcut(QKeySequence('Ctrl+Z'), self).activated.connect(self._undo_shortcut)
         QShortcut(QKeySequence('Space'),  self).activated.connect(self._space_toggle)
         QShortcut(QKeySequence('Escape'), self).activated.connect(self.stop_reading)
 

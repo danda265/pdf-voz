@@ -168,3 +168,64 @@ def test_span_at_point_returns_none_outside_any_span(sample_pdf):
     spans = spans_for_page(doc[0])
     doc.close()
     assert span_at_point(spans, (10, 780)) is None
+
+
+def test_spans_for_page_on_blank_page_returns_empty(blank_page_pdf):
+    doc = fitz.open(str(blank_page_pdf))
+    spans = spans_for_page(doc[0])
+    doc.close()
+    assert spans == []
+
+
+def test_span_at_point_on_blank_page_finds_nothing(blank_page_pdf):
+    doc = fitz.open(str(blank_page_pdf))
+    spans = spans_for_page(doc[0])
+    doc.close()
+    assert span_at_point(spans, (100, 100)) is None
+
+
+def test_spans_for_page_reads_each_page_of_multipage(multipage_pdf):
+    doc = fitz.open(str(multipage_pdf))
+    assert doc.page_count == 3
+    textos = [' '.join(s.text for s in spans_for_page(doc[i])) for i in range(3)]
+    doc.close()
+    assert 'Pagina numero 1' in textos[0]
+    assert 'Pagina numero 2' in textos[1]
+    assert 'Pagina numero 3' in textos[2]
+
+
+def test_save_copy_does_not_overwrite_an_existing_copy(sample_pdf):
+    """Editar o mesmo PDF duas vezes nao pode sobrescrever a copia anterior."""
+    primeira = sample_pdf.with_name(f'{sample_pdf.stem}_editado{sample_pdf.suffix}')
+    primeira.write_bytes(b'copia anterior do usuario')
+    conteudo_anterior = primeira.read_bytes()
+
+    doc = fitz.open(str(sample_pdf))
+    alvo = save_copy(doc, str(sample_pdf))
+    doc.close()
+
+    assert alvo != primeira
+    assert alvo.name == f'{sample_pdf.stem}_editado_2{sample_pdf.suffix}'
+    assert alvo.exists()
+    assert primeira.read_bytes() == conteudo_anterior
+
+
+def test_replace_span_text_keeps_original_when_font_resolution_fails(sample_pdf, monkeypatch):
+    """Falha ao resolver a fonte nao pode apagar o texto original: a operacao aborta intacta."""
+    import pdf_editor
+
+    doc = fitz.open(str(sample_pdf))
+    page = doc[0]
+    span = next(s for s in spans_for_page(page) if s.text.strip() == 'Ola mundo')
+
+    def falha(*_args, **_kwargs):
+        raise RuntimeError('falha simulada ao resolver fonte')
+
+    monkeypatch.setattr(pdf_editor, 'resolve_font', falha)
+    with pytest.raises(RuntimeError):
+        replace_span_text(doc, page, span, 'Texto novo')
+
+    texto = page.get_text()
+    doc.close()
+    assert 'Ola mundo' in texto
+    assert 'Segunda linha de teste' in texto

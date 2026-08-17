@@ -45,6 +45,8 @@ class PageCanvas(QLabel):
         self.add_mode = enabled
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
+        if event.button() != Qt.MouseButton.LeftButton:
+            return
         doc_x = event.position().x() / self.zoom
         doc_y = event.position().y() / self.zoom
         if self.add_mode:
@@ -71,6 +73,7 @@ class SpanEditPopup(QWidget):
         super().__init__(parent, Qt.WindowType.Popup)
         self._span: Optional[TextSpan] = None
         self._color: Tuple[float, float, float] = (0.0, 0.0, 0.0)
+        self._family_touched = False   # o usuário escolheu outra fonte nesta edição?
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -92,6 +95,7 @@ class SpanEditPopup(QWidget):
         self.size_spin.setRange(6, 96)
         self.size_spin.setValue(12)
         self.font_combo = QFontComboBox()
+        self.font_combo.currentFontChanged.connect(self._on_family_changed)
         self.color_btn = QPushButton('Cor')
         self.color_btn.clicked.connect(self._pick_color)
         toolbar.addWidget(self.bold_btn)
@@ -116,7 +120,12 @@ class SpanEditPopup(QWidget):
         self.bold_btn.setChecked(span.bold)
         self.italic_btn.setChecked(span.italic)
         self.size_spin.setValue(int(span.size))
+        # setCurrentFont dispara currentFontChanged; bloquear evita marcar como
+        # "usuário trocou a fonte" o que é só o preenchimento inicial do popup.
+        self.font_combo.blockSignals(True)
         self.font_combo.setCurrentFont(QFont(span.font_name))
+        self.font_combo.blockSignals(False)
+        self._family_touched = False
         self._color = span.color
         self.move(global_pos)
         self.show()
@@ -129,10 +138,14 @@ class SpanEditPopup(QWidget):
         self.bold_btn.setChecked(False)
         self.italic_btn.setChecked(False)
         self.size_spin.setValue(12)
+        self._family_touched = False
         self._color = (0.0, 0.0, 0.0)
         self.move(global_pos)
         self.show()
         self.text_input.setFocus()
+
+    def _on_family_changed(self, _font) -> None:
+        self._family_touched = True
 
     def _pick_color(self) -> None:
         r, g, b = (int(c * 255) for c in self._color)
@@ -146,7 +159,11 @@ class SpanEditPopup(QWidget):
             italic=self.italic_btn.isChecked(),
             size=float(self.size_spin.value()),
             color=self._color,
-            family=self.font_combo.currentFont().family(),
+            # Só manda família quando o usuário trocou de fonte de propósito. O nome
+            # que o PDF traz costuma vir com prefixo de subset ("ABCDEF+TimesNewRoman"),
+            # que o QFontComboBox resolve para uma família genérica — mandá-lo sempre
+            # impediria o motor de reencontrar e reutilizar a fonte embutida original.
+            family=self.font_combo.currentFont().family() if self._family_touched else None,
         )
         self.confirmed.emit(self._span, self.text_input.text(), override)
         self.hide()

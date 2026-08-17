@@ -127,11 +127,14 @@ def resolve_font(doc: fitz.Document, page: fitz.Page, span: Optional[TextSpan],
 
 def replace_span_text(doc: fitz.Document, page: fitz.Page, span: TextSpan, new_text: str,
                       override: Optional[FormatOverride] = None) -> FontChoice:
+    # A fonte e resolvida ANTES de redigir: resolver le fontes embutidas do documento e
+    # pode falhar. Redigindo primeiro, uma falha aqui deixaria o span apagado sem
+    # substituto — texto perdido. Falhando antes, a pagina fica intacta.
+    choice = resolve_font(doc, page, span, override) if new_text else None
     page.add_redact_annot(fitz.Rect(span.bbox), fill=(1, 1, 1))
     page.apply_redactions()
     if not new_text:
         return FontChoice('', None, span.size, span.color, used_fallback=False)
-    choice = resolve_font(doc, page, span, override)
     if choice.fontbuffer:
         page.insert_font(fontname=choice.fontname, fontbuffer=choice.fontbuffer)
     page.insert_text(span.origin, new_text, fontname=choice.fontname,
