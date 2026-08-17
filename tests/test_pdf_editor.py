@@ -342,3 +342,47 @@ def test_resolve_font_prefers_system_font_over_base14_when_family_is_chosen(samp
 def test_clean_text_normaliza_espaco_nao_separavel():
     """Fontes reais gravam \xa0 no lugar do espaco; a leitura em voz nao pode engasgar nisso."""
     assert clean_text('texto\xa0com\xa0espacos') == 'texto com espacos'
+
+
+def test_replace_span_text_move_o_texto_pelo_deslocamento(sample_pdf):
+    """Deslocamento reposiciona o texto novo sem deixar o antigo para tras."""
+    doc = fitz.open(str(sample_pdf))
+    page = doc[0]
+    span = next(s for s in spans_for_page(page) if s.text.strip() == 'Ola mundo')
+    origem_x = span.origin[0]
+
+    replace_span_text(doc, page, span, 'Movido', deslocamento=(100.0, 0.0))
+
+    movido = next(s for s in spans_for_page(page) if s.text.strip() == 'Movido')
+    texto = page.get_text()
+    doc.close()
+    assert abs(movido.origin[0] - (origem_x + 100.0)) < 1.0
+    assert 'Ola mundo' not in texto          # o original nao ficou para tras
+    assert 'Segunda linha de teste' in texto  # vizinho intacto
+
+
+def test_replace_span_text_quebra_em_varias_linhas(sample_pdf):
+    """'\n' no texto novo tem de virar linhas de verdade, descendo na pagina."""
+    doc = fitz.open(str(sample_pdf))
+    page = doc[0]
+    span = next(s for s in spans_for_page(page) if s.text.strip() == 'Ola mundo')
+
+    replace_span_text(doc, page, span, 'primeira\nsegunda')
+
+    spans = spans_for_page(page)
+    doc.close()
+    primeira = next(s for s in spans if s.text.strip() == 'primeira')
+    segunda = next(s for s in spans if s.text.strip() == 'segunda')
+    assert segunda.origin[1] > primeira.origin[1]        # a segunda desceu
+    assert abs(segunda.origin[0] - primeira.origin[0]) < 1.0   # alinhadas a esquerda
+
+
+def test_overflow_mede_a_linha_mais_larga_nao_o_texto_todo(sample_pdf):
+    """Texto longo quebrado em linhas curtas nao deve disparar o aviso de transbordo."""
+    doc = fitz.open(str(sample_pdf))
+    page = doc[0]
+    span = next(s for s in spans_for_page(page) if s.text.strip() == 'Ola mundo')
+
+    choice = replace_span_text(doc, page, span, 'curto\ncurto\ncurto')
+    doc.close()
+    assert choice.overflowed is False

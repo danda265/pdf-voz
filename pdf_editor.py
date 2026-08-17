@@ -209,7 +209,11 @@ def resolve_font(doc: fitz.Document, page: fitz.Page, span: Optional[TextSpan],
 
 
 def replace_span_text(doc: fitz.Document, page: fitz.Page, span: TextSpan, new_text: str,
-                      override: Optional[FormatOverride] = None) -> FontChoice:
+                      override: Optional[FormatOverride] = None,
+                      deslocamento: Tuple[float, float] = (0.0, 0.0)) -> FontChoice:
+    """Troca o texto de um span. `deslocamento` move o texto novo em relacao a posicao
+    original, em pontos do PDF (x cresce para a direita, y para baixo). `new_text` pode
+    conter '\\n': o PyMuPDF quebra em varias linhas descendo a partir da origem."""
     # A fonte e resolvida ANTES de redigir: resolver le fontes embutidas do documento e
     # pode falhar. Redigindo primeiro, uma falha aqui deixaria o span apagado sem
     # substituto — texto perdido. Falhando antes, a pagina fica intacta.
@@ -220,7 +224,8 @@ def replace_span_text(doc: fitz.Document, page: fitz.Page, span: TextSpan, new_t
         return FontChoice('', None, span.size, span.color, used_fallback=False)
     if choice.fontbuffer:
         page.insert_font(fontname=choice.fontname, fontbuffer=choice.fontbuffer)
-    page.insert_text(span.origin, new_text, fontname=choice.fontname,
+    destino = (span.origin[0] + deslocamento[0], span.origin[1] + deslocamento[1])
+    page.insert_text(destino, new_text, fontname=choice.fontname,
                      fontsize=choice.size, color=choice.color)
     choice.overflowed = _excede_largura(new_text, choice, span)
     return choice
@@ -229,15 +234,21 @@ def replace_span_text(doc: fitz.Document, page: fitz.Page, span: TextSpan, new_t
 def _excede_largura(new_text: str, choice: FontChoice, span: TextSpan) -> bool:
     """O texto novo passa da largura que o trecho original ocupava?
 
+    Mede a linha MAIS LARGA: com o texto quebrado em varias linhas, o que importa e se
+    alguma delas estoura, nao o comprimento total.
+
     Serve só para avisar o usuário — nada é encolhido ou truncado automaticamente.
     Fontes embutidas não são mensuráveis por get_text_length; nesse caso não avisamos
     (melhor silêncio do que um alarme falso)."""
+    disponivel = span.bbox[2] - span.bbox[0]
     try:
-        largura_nova = fitz.get_text_length(new_text, fontname=choice.fontname,
-                                            fontsize=choice.size)
+        for linha in new_text.split('\n'):
+            if fitz.get_text_length(linha, fontname=choice.fontname,
+                                    fontsize=choice.size) > disponivel:
+                return True
     except Exception:
         return False
-    return largura_nova > (span.bbox[2] - span.bbox[0])
+    return False
 
 
 def insert_free_text(doc: fitz.Document, page: fitz.Page, point: Tuple[float, float],

@@ -475,6 +475,7 @@ class MainWindow(QMainWindow):
         self.edit_scroll = PageScrollArea()
         self.edit_scroll.canvas.span_clicked.connect(self._on_span_clicked)
         self.edit_scroll.canvas.free_area_clicked.connect(self._on_free_area_clicked)
+        self.edit_scroll.canvas.span_moved.connect(self._on_span_moved)
         vbox.addWidget(self.edit_scroll, 1)
 
         self.edit_popup = SpanEditPopup(self)
@@ -516,6 +517,8 @@ class MainWindow(QMainWindow):
         page = self.edit_session.doc[self.edit_page_index]
         spans = spans_for_page(page)
         self.edit_scroll.canvas.show_page(page, spans)
+        # o popup precisa da largura para saber onde fica o centro ao centralizar
+        self.edit_popup.largura_pagina = page.rect.width
         self.edit_page_label.setText(
             f'Página {self.edit_page_index + 1} de {self.edit_session.doc.page_count}'
         )
@@ -541,14 +544,28 @@ class MainWindow(QMainWindow):
         local = QPoint(int(x * self.edit_scroll.canvas.zoom), int(y * self.edit_scroll.canvas.zoom))
         self.edit_popup.open_for_new_text(self.edit_scroll.canvas.mapToGlobal(local))
 
-    def _on_popup_confirmed(self, span, new_text: str, override: FormatOverride) -> None:
+    def _on_span_moved(self, span: TextSpan, dx: float, dy: float) -> None:
+        """Arrastou o trecho: abre a caixa já com o deslocamento, para o usuário conferir
+        e ajustar nas setas antes de aplicar. Aplicar direto no soltar tornaria fácil mover
+        sem querer, e o texto já teria sido reescrito."""
+        x, y = span.origin
+        local = QPoint(int((x + dx) * self.edit_scroll.canvas.zoom),
+                       int((y + dy) * self.edit_scroll.canvas.zoom))
+        self.edit_popup.open_for_span(span, self.edit_scroll.canvas.mapToGlobal(local), (dx, dy))
+        self.status_label.setText(
+            f'Trecho movido {dx:+.0f}, {dy:+.0f} pt — confirme em OK ou ajuste nas setas.'
+        )
+
+    def _on_popup_confirmed(self, span, new_text: str, override: FormatOverride,
+                            deslocamento=(0.0, 0.0)) -> None:
         if not self.edit_session:
             return
         page = self.edit_session.doc[self.edit_page_index]
         self.edit_session.snapshot()
         try:
             if span is not None:
-                choice = replace_span_text(self.edit_session.doc, page, span, new_text, override)
+                choice = replace_span_text(self.edit_session.doc, page, span, new_text, override,
+                                           deslocamento)
             else:
                 choice = insert_free_text(self.edit_session.doc, page, self._pending_new_point, new_text, override)
         except Exception as exc:
@@ -564,9 +581,12 @@ class MainWindow(QMainWindow):
         if choice.used_fallback:
             avisos.append('fonte aproximada (a original não pôde ser reutilizada)')
         if choice.overflowed:
-            avisos.append('o texto novo passou da largura do trecho original e pode '
-                          'estar por cima do que vem depois — encurte o texto ou '
-                          'diminua o tamanho da fonte')
+            avisos.append('alguma linha passou da largura do trecho original e pode '
+                          'estar por cima do que vem depois — encurte o texto, quebre '
+                          'em outra linha ou diminua a fonte')
+        if new_text.count('\n'):
+            avisos.append('as linhas extras descem sobre a área abaixo — confira se '
+                          'não cobriram nada')
         if avisos:
             self.status_label.setText('Edição aplicada — ' + '; '.join(avisos) + '.')
         else:
