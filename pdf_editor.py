@@ -241,6 +241,17 @@ def area_de_conteudo(page: fitz.Page) -> fitz.Rect:
     return uniao if uniao is not None else fitz.Rect(page.rect)
 
 
+def coluna_de_texto(page: fitz.Page, conteudo: Optional[fitz.Rect] = None) -> Tuple[float, float]:
+    """(esquerda, direita) da coluna onde o texto e escrito e alinhado.
+
+    E a mancha do documento, esticada no minimo ate a margem espelhada da pagina. So a
+    mancha apertaria demais num documento de linhas curtas: o texto quebraria cedo, ate no
+    meio de uma palavra, com folga de sobra na folha. Espelhar a margem esquerda reproduz
+    a coluna que o proprio documento usa — e e o que "centralizar" significa no Word."""
+    conteudo = conteudo if conteudo is not None else area_de_conteudo(page)
+    return conteudo.x0, max(conteudo.x1, page.rect.x1 - conteudo.x0)
+
+
 def _metricas_da_caixa(choice: FontChoice, entrelinha: Optional[float]) -> Tuple[float, float]:
     """(altura de uma linha, folga fixa) que o insert_textbox consome.
 
@@ -284,9 +295,9 @@ def _caixa_do_texto(page: fitz.Page, span: TextSpan, choice: FontChoice,
 
     `conteudo` deve ser medido ANTES da redacao: apagar os trechos selecionados encolhe a
     mancha, e alinhar pela mancha encolhida jogaria o texto para o lugar errado."""
-    conteudo = conteudo if conteudo is not None else area_de_conteudo(page)
-    x0 = span.bbox[0] if alinhamento in (None, '') else min(conteudo.x0, span.bbox[0])
-    x1 = max(conteudo.x1, span.bbox[2])
+    coluna_x0, coluna_x1 = coluna_de_texto(page, conteudo)
+    x0 = span.bbox[0] if alinhamento in (None, '') else min(coluna_x0, span.bbox[0])
+    x1 = max(coluna_x1, span.bbox[2])
     altura_linha, folga = _metricas_da_caixa(choice, entrelinha)
     topo = span.origin[1] - _ascendente(choice) * choice.size
     return fitz.Rect(x0 + deslocamento[0], topo + deslocamento[1],
@@ -352,13 +363,18 @@ def replace_spans_text(doc: fitz.Document, page: fitz.Page, spans: List[TextSpan
     page.apply_redactions()
 
     resultado: List[FontChoice] = []
+    # Quando um trecho passa a ocupar mais linhas, os trechos seguintes da selecao descem
+    # junto. Sem isso a linha que sobra e escrita POR CIMA da proxima, que ficaria parada
+    # no lugar original — o bloco sai embaralhado.
+    empurrao = 0.0
     for span, texto, choice in zip(spans, textos, escolhas):
         if not texto:
             resultado.append(FontChoice('', None, span.size, span.color, used_fallback=False))
             continue
         if choice.fontbuffer:
             page.insert_font(fontname=choice.fontname, fontbuffer=choice.fontbuffer)
-        caixa = _caixa_do_texto(page, span, choice, override.alinhamento, deslocamento,
+        desloc = (deslocamento[0], deslocamento[1] + empurrao)
+        caixa = _caixa_do_texto(page, span, choice, override.alinhamento, desloc,
                                 override.entrelinha, conteudo)
         coube, linhas = _escrever_na_caixa(page, caixa, texto, choice,
                                            override.alinhamento, override.entrelinha)
@@ -366,6 +382,8 @@ def replace_spans_text(doc: fitz.Document, page: fitz.Page, spans: List[TextSpan
             raise PDFEditError(
                 'O texto novo não coube na página. Encurte o texto ou reduza o tamanho da fonte.'
             )
+        altura_linha, _ = _metricas_da_caixa(choice, override.entrelinha)
+        empurrao += (linhas - 1) * altura_linha
         choice.overflowed = linhas > 1
         resultado.append(choice)
     return resultado

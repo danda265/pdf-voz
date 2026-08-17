@@ -259,7 +259,9 @@ def test_replace_span_text_quebra_sozinho_texto_mais_longo(sample_pdf):
     doc = fitz.open(str(sample_pdf))
     page = doc[0]
     span = next(s for s in spans_for_page(page) if s.text.strip() == 'Ola mundo')
-    longo = 'Um texto substancialmente mais longo que o original'
+    longo = ('Um texto substancialmente mais longo que o original, '
+             'comprido o bastante para nao caber numa linha da coluna do documento, '
+             'de modo que precise mesmo quebrar sozinho em varias linhas.')
     choice = replace_span_text(doc, page, span, longo)
     texto = page.get_text()
     doc.close()
@@ -392,11 +394,11 @@ def test_overflow_sinaliza_quando_ocupa_mais_linhas(sample_pdf):
     assert choice.overflowed is True
 
 
-def test_alinhamento_centro_centraliza_na_mancha_do_documento(sample_pdf):
+def test_alinhamento_centro_centraliza_na_coluna_do_documento(sample_pdf):
     doc = fitz.open(str(sample_pdf))
     page = doc[0]
-    from pdf_editor import area_de_conteudo
-    mancha = area_de_conteudo(page)
+    from pdf_editor import coluna_de_texto
+    esquerda, direita = coluna_de_texto(page)
     span = next(s for s in spans_for_page(page) if s.text.strip() == 'Ola mundo')
 
     replace_span_text(doc, page, span, 'Centro', FormatOverride(alinhamento='centro'))
@@ -404,21 +406,37 @@ def test_alinhamento_centro_centraliza_na_mancha_do_documento(sample_pdf):
     novo = next(s for s in spans_for_page(page) if s.text.strip() == 'Centro')
     doc.close()
     centro_texto = (novo.bbox[0] + novo.bbox[2]) / 2
-    assert abs(centro_texto - (mancha.x0 + mancha.x1) / 2) < 2.0
+    assert abs(centro_texto - (esquerda + direita) / 2) < 2.0
 
 
-def test_alinhamento_direita_encosta_na_borda_da_mancha(sample_pdf):
+def test_alinhamento_direita_encosta_na_borda_da_coluna(sample_pdf):
     doc = fitz.open(str(sample_pdf))
     page = doc[0]
-    from pdf_editor import area_de_conteudo
-    mancha = area_de_conteudo(page)
+    from pdf_editor import coluna_de_texto
+    _esquerda, direita = coluna_de_texto(page)
     span = next(s for s in spans_for_page(page) if s.text.strip() == 'Ola mundo')
 
     replace_span_text(doc, page, span, 'Direita', FormatOverride(alinhamento='direita'))
 
     novo = next(s for s in spans_for_page(page) if s.text.strip() == 'Direita')
     doc.close()
-    assert abs(novo.bbox[2] - mancha.x1) < 3.0
+    assert abs(novo.bbox[2] - direita) < 3.0
+
+
+def test_coluna_de_texto_estica_ate_a_margem_espelhada(sample_pdf):
+    """Num documento de linhas curtas, a coluna nao pode ficar presa a extensao do
+    texto existente — o novo texto quebraria cedo, ate no meio de palavra."""
+    from pdf_editor import area_de_conteudo, coluna_de_texto
+
+    doc = fitz.open(str(sample_pdf))
+    page = doc[0]
+    mancha = area_de_conteudo(page)
+    esquerda, direita = coluna_de_texto(page)
+    largura_pagina = page.rect.x1
+    doc.close()
+    assert esquerda == mancha.x0
+    assert direita >= largura_pagina - mancha.x0 - 0.01
+    assert direita > mancha.x1
 
 
 def test_sem_alinhamento_o_texto_fica_exatamente_onde_estava(sample_pdf):
@@ -521,3 +539,59 @@ def test_replace_spans_text_aplica_a_todos_o_que_o_usuario_mudou(tmp_path):
     doc.close()
     for texto in ('primeira', 'segunda'):
         assert abs(next(s for s in novos if s.text.strip() == texto).size - 14.0) < 0.5
+
+
+def test_linha_que_quebra_empurra_as_seguintes_da_selecao(tmp_path):
+    """Cenario real relatado: ao editar um bloco, a primeira linha quebrou em duas e a
+    linha extra foi escrita POR CIMA da seguinte. As seguintes tem de descer junto."""
+    from pdf_editor import replace_spans_text
+
+    caminho = tmp_path / 'bloco.pdf'
+    d = fitz.open()
+    pg = d.new_page(width=595, height=842)
+    pg.insert_text((72, 100), 'primeira', fontsize=12, fontname='helv')
+    pg.insert_text((72, 120), 'segunda', fontsize=12, fontname='helv')
+    pg.insert_text((72, 140), 'terceira', fontsize=12, fontname='helv')
+    d.save(str(caminho)); d.close()
+
+    doc = fitz.open(str(caminho))
+    page = doc[0]
+    spans = spans_for_page(page)
+    alvos = [next(s for s in spans if s.text.strip() == t)
+             for t in ('primeira', 'segunda', 'terceira')]
+
+    # a primeira vira duas linhas; as outras duas seguem iguais
+    replace_spans_text(doc, page, alvos, ['linha A\nlinha B', 'segunda', 'terceira'])
+
+    novos = {s.text.strip(): s for s in spans_for_page(page)}
+    doc.close()
+    y_b = novos['linha B'].origin[1]
+    y_segunda = novos['segunda'].origin[1]
+    y_terceira = novos['terceira'].origin[1]
+    assert y_segunda > y_b + 1, 'a segunda ficou por cima da linha que sobrou'
+    assert y_terceira > y_segunda + 1, 'a terceira nao acompanhou o empurrao'
+
+
+def test_sem_crescimento_o_bloco_nao_se_move(tmp_path):
+    """O empurrao so pode valer quando algo cresce: sem quebra, tudo fica no lugar."""
+    from pdf_editor import replace_spans_text
+
+    caminho = tmp_path / 'bloco2.pdf'
+    d = fitz.open()
+    pg = d.new_page(width=595, height=842)
+    pg.insert_text((72, 100), 'alfa', fontsize=12, fontname='helv')
+    pg.insert_text((72, 130), 'beta', fontsize=12, fontname='helv')
+    d.save(str(caminho)); d.close()
+
+    doc = fitz.open(str(caminho))
+    page = doc[0]
+    spans = spans_for_page(page)
+    alvos = [next(s for s in spans if s.text.strip() == t) for t in ('alfa', 'beta')]
+    antes = [s.origin[1] for s in alvos]
+
+    replace_spans_text(doc, page, alvos, ['ALFA', 'BETA'])
+
+    novos = {s.text.strip(): s for s in spans_for_page(page)}
+    doc.close()
+    assert abs(novos['ALFA'].origin[1] - antes[0]) < 0.5
+    assert abs(novos['BETA'].origin[1] - antes[1]) < 0.5

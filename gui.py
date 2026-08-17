@@ -599,12 +599,8 @@ class MainWindow(QMainWindow):
         if any(c.used_fallback for c in escolhas):
             avisos.append('fonte aproximada (a original não pôde ser reutilizada)')
         if any(c.overflowed for c in escolhas):
-            avisos.append('alguma linha passou da largura do trecho original e pode '
-                          'estar por cima do que vem depois — encurte o texto, quebre '
-                          'em outra linha ou diminua a fonte')
-        if any('\n' in t for t in textos):
-            avisos.append('as linhas extras descem sobre a área abaixo — confira se '
-                          'não cobriram nada')
+            avisos.append('o texto passou a ocupar mais linhas; o que vem DEPOIS da '
+                          'seleção não desceu junto — confira se nada foi coberto')
         if avisos:
             self.status_label.setText('Edição aplicada — ' + '; '.join(avisos) + '.')
         else:
