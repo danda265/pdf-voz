@@ -456,9 +456,6 @@ class MainWindow(QMainWindow):
         self.edit_page_label = QLabel('—')
         self.edit_next_button = QPushButton('▶')
         self.edit_next_button.clicked.connect(lambda: self._go_edit_page(1))
-        self.add_text_button = QPushButton('Adicionar texto')
-        self.add_text_button.setCheckable(True)
-        self.add_text_button.toggled.connect(self._toggle_add_mode)
         self.edit_undo_button = QPushButton('Desfazer')
         self.edit_undo_button.clicked.connect(self._edit_undo)
         self.edit_save_button = QPushButton('Salvar cópia')
@@ -467,7 +464,6 @@ class MainWindow(QMainWindow):
         hbox.addWidget(self.edit_page_label)
         hbox.addWidget(self.edit_next_button)
         hbox.addSpacing(12)
-        hbox.addWidget(self.add_text_button)
         hbox.addWidget(self.edit_undo_button)
         hbox.addStretch(1)
         hbox.addWidget(self.edit_save_button)
@@ -510,7 +506,6 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(0)
         # A caixa agora é janela flutuante: não some sozinha ao sair do modo edição.
         self.edit_popup.hide()
-        self.add_text_button.setChecked(False)   # não deixa o modo "Adicionar texto" preso
         self.edit_page_index = 0
         if self.edit_session:
             self.edit_session.doc.close()
@@ -533,9 +528,6 @@ class MainWindow(QMainWindow):
         if 0 <= new_index < self.edit_session.doc.page_count:
             self.edit_page_index = new_index
             self._render_edit_page()
-
-    def _toggle_add_mode(self, checked: bool) -> None:
-        self.edit_scroll.canvas.set_add_mode(checked)
 
     def _on_spans_selected(self, spans: list) -> None:
         """Seleção por retângulo: abre a caixa com todos os trechos de uma vez."""

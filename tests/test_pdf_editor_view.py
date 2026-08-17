@@ -279,3 +279,98 @@ def test_setas_pedem_previa_da_nova_posicao(qtbot):
 
     assert blocker.args[1] == 2.0
     assert blocker.args[2] == 0.0
+
+
+def test_clique_no_vazio_adiciona_texto_ali(qtbot):
+    """Clicar numa área em branco tem de abrir a caixa de texto novo naquele ponto,
+    sem precisar ligar nenhum modo antes."""
+    from PyQt6.QtCore import QPointF, Qt
+    from PyQt6.QtGui import QMouseEvent
+    from pdf_editor_view import PageCanvas
+
+    canvas = PageCanvas()
+    qtbot.addWidget(canvas)
+    canvas.zoom = 2.0
+    canvas.spans = [_span_em(100, 'existente')]
+
+    def ev(tipo, x, y):
+        return QMouseEvent(tipo, QPointF(x, y), Qt.MouseButton.LeftButton,
+                           Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+
+    # clique seco (sem arrasto) bem longe de qualquer texto
+    canvas.mousePressEvent(ev(QMouseEvent.Type.MouseButtonPress, 600.0, 1200.0))
+    with qtbot.waitSignal(canvas.free_area_clicked, timeout=1000) as blocker:
+        canvas.mouseReleaseEvent(ev(QMouseEvent.Type.MouseButtonRelease, 600.0, 1200.0))
+
+    assert abs(blocker.args[0] - 300.0) < 0.01   # 600 px / zoom 2.0
+    assert abs(blocker.args[1] - 600.0) < 0.01
+
+
+def test_arrasto_no_vazio_seleciona_em_vez_de_adicionar(qtbot):
+    """O gesto de arrastar continua sendo seleção — não pode virar texto novo."""
+    from PyQt6.QtCore import QPointF, Qt
+    from PyQt6.QtGui import QMouseEvent
+    from pdf_editor_view import PageCanvas
+
+    canvas = PageCanvas()
+    qtbot.addWidget(canvas)
+    canvas.zoom = 1.0
+    canvas.spans = [_span_em(100, 'a'), _span_em(140, 'b')]
+    adicionou = []
+    canvas.free_area_clicked.connect(lambda x, y: adicionou.append((x, y)))
+
+    def ev(tipo, x, y):
+        return QMouseEvent(tipo, QPointF(x, y), Qt.MouseButton.LeftButton,
+                           Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier)
+
+    canvas.mousePressEvent(ev(QMouseEvent.Type.MouseButtonPress, 40.0, 90.0))
+    canvas.mouseMoveEvent(ev(QMouseEvent.Type.MouseMove, 250.0, 160.0))
+    with qtbot.waitSignal(canvas.spans_selected, timeout=1000):
+        canvas.mouseReleaseEvent(ev(QMouseEvent.Type.MouseButtonRelease, 250.0, 160.0))
+
+    assert adicionou == [], 'arrasto não pode disparar adicionar texto'
+
+
+def test_confirmar_apaga_o_fantasma_da_previa(qtbot):
+    """Sem apagar, o fantasma fica desenhado por cima do texto recém-movido e parece
+    que o trecho duplicou — foi exatamente o que apareceu em uso."""
+    popup = SpanEditPopup(None)
+    qtbot.addWidget(popup)
+    popup.open_for_span(_make_span(), popup.pos(), deslocamento=(20.0, 5.0))
+
+    avisos = []
+    popup.posicao_mudou.connect(lambda spans, dx, dy: avisos.append((list(spans), dx, dy)))
+    popup._confirm()
+
+    assert avisos, 'não avisou nada ao confirmar'
+    assert avisos[-1] == ([], 0.0, 0.0), 'último aviso tem de limpar a prévia'
+
+
+def test_cancelar_tambem_apaga_o_fantasma(qtbot):
+    popup = SpanEditPopup(None)
+    qtbot.addWidget(popup)
+    popup.open_for_span(_make_span(), popup.pos(), deslocamento=(20.0, 5.0))
+
+    avisos = []
+    popup.posicao_mudou.connect(lambda spans, dx, dy: avisos.append((list(spans), dx, dy)))
+    popup._cancel()
+
+    assert avisos[-1] == ([], 0.0, 0.0)
+
+
+def test_redesenhar_a_pagina_nao_carrega_fantasma_antigo(qtbot, sample_pdf):
+    """Rede de segurança: nenhum fantasma pode sobreviver a um redesenho da página."""
+    import fitz
+    from pdf_editor import spans_for_page
+    from pdf_editor_view import PageCanvas
+
+    canvas = PageCanvas()
+    qtbot.addWidget(canvas)
+    doc = fitz.open(str(sample_pdf))
+    spans = spans_for_page(doc[0])
+    canvas.previsualizar(spans, 30.0, 10.0)
+    assert canvas._previa[0]
+
+    canvas.show_page(doc[0], spans)
+    doc.close()
+    assert canvas._previa == ([], 0.0, 0.0)

@@ -53,7 +53,6 @@ class PageCanvas(QLabel):
         super().__init__(parent)
         self.zoom = DEFAULT_ZOOM
         self.spans: List[TextSpan] = []
-        self.add_mode = False
         self.selecionados: List[TextSpan] = []
         self._span_pressionado: Optional[TextSpan] = None
         self._pos_inicial = None
@@ -65,14 +64,11 @@ class PageCanvas(QLabel):
     def show_page(self, page: fitz.Page, spans: List[TextSpan]) -> None:
         self.spans = spans
         self.selecionados = []
+        self._previa = ([], 0.0, 0.0)   # nenhum fantasma sobrevive a um redesenho
         pix = page.get_pixmap(matrix=fitz.Matrix(self.zoom, self.zoom))
         image = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format.Format_RGB888)
         self.setPixmap(QPixmap.fromImage(image.copy()))
         self.setFixedSize(pix.width, pix.height)
-        self._cancelar_arrasto()
-
-    def set_add_mode(self, enabled: bool) -> None:
-        self.add_mode = enabled
         self._cancelar_arrasto()
 
     def destacar(self, spans: List[TextSpan]) -> None:
@@ -98,11 +94,9 @@ class PageCanvas(QLabel):
             return
         doc_x = event.position().x() / self.zoom
         doc_y = event.position().y() / self.zoom
-        if self.add_mode:
-            self.free_area_clicked.emit(doc_x, doc_y)
-            return
-        # Em cima de um texto: vira edicao (clique) ou movimento (arrasto). Em area vazia:
-        # vira retangulo de selecao. So da para saber qual no release.
+        # Quatro gestos, decididos no release porque so ali se sabe se houve arrasto:
+        #   em cima de texto  — clique edita, arrasto move
+        #   em area vazia     — clique adiciona texto ali, arrasto seleciona varios
         self._span_pressionado = span_at_point(self.spans, (doc_x, doc_y))
         self._marcando = self._span_pressionado is None
         self._pos_inicial = event.position()
@@ -131,7 +125,9 @@ class PageCanvas(QLabel):
 
         if marcando:
             if not arrastando:
-                return   # clique solto em area vazia: nao faz nada
+                # clique seco no vazio: adiciona texto ali mesmo, sem precisar ligar modo
+                self.free_area_clicked.emit(fim.x() / self.zoom, fim.y() / self.zoom)
+                return
             area = (inicial.x() / self.zoom, inicial.y() / self.zoom,
                     fim.x() / self.zoom, fim.y() / self.zoom)
             escolhidos = spans_na_area(self.spans, area)
@@ -489,6 +485,9 @@ class SpanEditPopup(QWidget):
             self.confirmed.emit(self._spans, textos, override, tuple(self._deslocamento))
         else:
             self.confirmed.emit(None, ['\n'.join(linhas)], override, tuple(self._deslocamento))
+        # Apaga o fantasma: sem isto ele fica desenhado por cima do texto que acabou de
+        # ser movido, e parece que o trecho duplicou.
+        self.posicao_mudou.emit([], 0.0, 0.0)
         self.hide()
 
     def _cancel(self) -> None:
