@@ -25,7 +25,7 @@ from tts_engine import DEFAULT_VOICE, TTSEngine
 from utils import clean_text, sanitize_error_message
 from pdf_editor import (
     EditSession, FormatOverride, PDFEditError, TextSpan,
-    insert_free_text, open_for_edit, replace_span_text, save_copy, spans_for_page,
+    insert_free_text, open_for_edit, replace_spans_text, save_copy, spans_for_page,
 )
 from pdf_editor_view import PageScrollArea, SpanEditPopup
 
@@ -476,10 +476,12 @@ class MainWindow(QMainWindow):
         self.edit_scroll.canvas.span_clicked.connect(self._on_span_clicked)
         self.edit_scroll.canvas.free_area_clicked.connect(self._on_free_area_clicked)
         self.edit_scroll.canvas.span_moved.connect(self._on_span_moved)
+        self.edit_scroll.canvas.spans_selected.connect(self._on_spans_selected)
         vbox.addWidget(self.edit_scroll, 1)
 
         self.edit_popup = SpanEditPopup(self)
         self.edit_popup.confirmed.connect(self._on_popup_confirmed)
+        self.edit_popup.posicao_mudou.connect(self.edit_scroll.canvas.previsualizar)
 
         return container
 
@@ -505,6 +507,8 @@ class MainWindow(QMainWindow):
 
     def _exit_edit_mode(self) -> None:
         self.stack.setCurrentIndex(0)
+        # A caixa agora é janela flutuante: não some sozinha ao sair do modo edição.
+        self.edit_popup.hide()
         self.add_text_button.setChecked(False)   # não deixa o modo "Adicionar texto" preso
         self.edit_page_index = 0
         if self.edit_session:
@@ -532,7 +536,18 @@ class MainWindow(QMainWindow):
     def _toggle_add_mode(self, checked: bool) -> None:
         self.edit_scroll.canvas.set_add_mode(checked)
 
+    def _on_spans_selected(self, spans: list) -> None:
+        """Seleção por retângulo: abre a caixa com todos os trechos de uma vez."""
+        primeiro = spans[0]
+        local = QPoint(int(primeiro.origin[0] * self.edit_scroll.canvas.zoom),
+                       int(primeiro.origin[1] * self.edit_scroll.canvas.zoom))
+        self.edit_popup.open_for_spans(spans, self.edit_scroll.canvas.mapToGlobal(local))
+        self.status_label.setText(
+            f'{len(spans)} trecho(s) selecionado(s) — edite, alinhe ou mova tudo de uma vez.'
+        )
+
     def _on_span_clicked(self, span: TextSpan) -> None:
+        self.edit_scroll.canvas.destacar([span])
         x, y = span.origin
         local = QPoint(int(x * self.edit_scroll.canvas.zoom), int(y * self.edit_scroll.canvas.zoom))
         self.edit_popup.open_for_span(span, self.edit_scroll.canvas.mapToGlobal(local))
@@ -546,6 +561,7 @@ class MainWindow(QMainWindow):
         """Arrastou o trecho: abre a caixa já com o deslocamento, para o usuário conferir
         e ajustar nas setas antes de aplicar. Aplicar direto no soltar tornaria fácil mover
         sem querer, e o texto já teria sido reescrito."""
+        self.edit_scroll.canvas.destacar([span])
         x, y = span.origin
         local = QPoint(int((x + dx) * self.edit_scroll.canvas.zoom),
                        int((y + dy) * self.edit_scroll.canvas.zoom))
@@ -554,18 +570,21 @@ class MainWindow(QMainWindow):
             f'Trecho movido {dx:+.0f}, {dy:+.0f} pt — confirme em OK ou ajuste nas setas.'
         )
 
-    def _on_popup_confirmed(self, span, new_text: str, override: FormatOverride,
+    def _on_popup_confirmed(self, spans, textos: list, override: FormatOverride,
                             deslocamento=(0.0, 0.0)) -> None:
         if not self.edit_session:
             return
         page = self.edit_session.doc[self.edit_page_index]
         self.edit_session.snapshot()
         try:
-            if span is not None:
-                choice = replace_span_text(self.edit_session.doc, page, span, new_text, override,
-                                           deslocamento)
+            if spans:
+                escolhas = replace_spans_text(self.edit_session.doc, page, spans, textos,
+                                              override, deslocamento)
+                choice = escolhas[0]
             else:
-                choice = insert_free_text(self.edit_session.doc, page, self._pending_new_point, new_text, override)
+                choice = insert_free_text(self.edit_session.doc, page, self._pending_new_point,
+                                          textos[0], override)
+                escolhas = [choice]
         except Exception as exc:
             # Restaura o snapshot em vez de descartá-lo: a falha pode ter acontecido
             # com o documento já parcialmente alterado, e descartar deixaria o dano
@@ -576,9 +595,9 @@ class MainWindow(QMainWindow):
             return
         self._render_edit_page()
         avisos = []
-        if choice.used_fallback:
+        if any(c.used_fallback for c in escolhas):
             avisos.append('fonte aproximada (a original não pôde ser reutilizada)')
-        if choice.overflowed:
+        if any(c.overflowed for c in escolhas):
             avisos.append('alguma linha passou da largura do trecho original e pode '
                           'estar por cima do que vem depois — encurte o texto, quebre '
                           'em outra linha ou diminua a fonte')

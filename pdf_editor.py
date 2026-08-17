@@ -274,13 +274,17 @@ def _ascendente(choice: FontChoice) -> float:
 
 def _caixa_do_texto(page: fitz.Page, span: TextSpan, choice: FontChoice,
                     alinhamento: Optional[str], deslocamento: Tuple[float, float],
-                    entrelinha: Optional[float] = None) -> fitz.Rect:
+                    entrelinha: Optional[float] = None,
+                    conteudo: Optional[fitz.Rect] = None) -> fitz.Rect:
     """Retangulo onde o texto novo sera escrito.
 
     Sem alinhamento escolhido, a caixa comeca na posicao original do trecho — assim o
     texto cai exatamente onde estava. Com alinhamento, ela ocupa a largura da mancha do
-    documento, que e o que faz "centralizar" e "justificar" baterem com o resto da pagina."""
-    conteudo = area_de_conteudo(page)
+    documento, que e o que faz "centralizar" e "justificar" baterem com o resto da pagina.
+
+    `conteudo` deve ser medido ANTES da redacao: apagar os trechos selecionados encolhe a
+    mancha, e alinhar pela mancha encolhida jogaria o texto para o lugar errado."""
+    conteudo = conteudo if conteudo is not None else area_de_conteudo(page)
     x0 = span.bbox[0] if alinhamento in (None, '') else min(conteudo.x0, span.bbox[0])
     x1 = max(conteudo.x1, span.bbox[2])
     altura_linha, folga = _metricas_da_caixa(choice, entrelinha)
@@ -322,27 +326,49 @@ def replace_span_text(doc: fitz.Document, page: fitz.Page, span: TextSpan, new_t
     """Troca o texto de um span. `deslocamento` move o texto em relacao a posicao original
     (pontos do PDF). `new_text` pode conter '\\n' para quebra forcada; o texto tambem quebra
     sozinho ao chegar na borda da caixa. Alinhamento e entrelinha vem do `override`."""
-    # A fonte e resolvida ANTES de redigir: resolver le fontes embutidas do documento e
-    # pode falhar. Redigindo primeiro, uma falha aqui deixaria o span apagado sem
-    # substituto — texto perdido. Falhando antes, a pagina fica intacta.
+    return replace_spans_text(doc, page, [span], [new_text], override, deslocamento)[0]
+
+
+def replace_spans_text(doc: fitz.Document, page: fitz.Page, spans: List[TextSpan],
+                       textos: List[str], override: Optional[FormatOverride] = None,
+                       deslocamento: Tuple[float, float] = (0.0, 0.0)) -> List[FontChoice]:
+    """Troca varios trechos de uma vez — cada um mantendo a PROPRIA formatacao.
+
+    So o que veio preenchido no `override` (porque o usuario mexeu naquele controle) e
+    aplicado a todos; o resto de cada trecho continua como estava. Alinhamento, entrelinha
+    e deslocamento valem para o conjunto."""
     override = override or FormatOverride()
-    choice = resolve_font(doc, page, span, override, new_text) if new_text else None
-    page.add_redact_annot(fitz.Rect(span.bbox), fill=(1, 1, 1))
+    # A mancha e medida antes de qualquer redacao: apagar os trechos selecionados a
+    # encolheria, e alinhar por ela depois jogaria o texto para o lugar errado.
+    conteudo = area_de_conteudo(page)
+    # As fontes sao resolvidas ANTES de redigir: resolver le fontes embutidas e pode
+    # falhar. Redigindo primeiro, uma falha aqui deixaria os trechos apagados sem
+    # substituto — texto perdido. Falhando antes, a pagina fica intacta.
+    escolhas = [resolve_font(doc, page, span, override, texto) if texto else None
+                for span, texto in zip(spans, textos)]
+
+    for span in spans:
+        page.add_redact_annot(fitz.Rect(span.bbox), fill=(1, 1, 1))
     page.apply_redactions()
-    if not new_text:
-        return FontChoice('', None, span.size, span.color, used_fallback=False)
-    if choice.fontbuffer:
-        page.insert_font(fontname=choice.fontname, fontbuffer=choice.fontbuffer)
-    caixa = _caixa_do_texto(page, span, choice, override.alinhamento, deslocamento,
-                            override.entrelinha)
-    coube, linhas_extras = _escrever_na_caixa(page, caixa, new_text, choice,
-                                              override.alinhamento, override.entrelinha)
-    if not coube:
-        raise PDFEditError(
-            'O texto novo não coube na página. Encurte o texto ou reduza o tamanho da fonte.'
-        )
-    choice.overflowed = linhas_extras > 1
-    return choice
+
+    resultado: List[FontChoice] = []
+    for span, texto, choice in zip(spans, textos, escolhas):
+        if not texto:
+            resultado.append(FontChoice('', None, span.size, span.color, used_fallback=False))
+            continue
+        if choice.fontbuffer:
+            page.insert_font(fontname=choice.fontname, fontbuffer=choice.fontbuffer)
+        caixa = _caixa_do_texto(page, span, choice, override.alinhamento, deslocamento,
+                                override.entrelinha, conteudo)
+        coube, linhas = _escrever_na_caixa(page, caixa, texto, choice,
+                                           override.alinhamento, override.entrelinha)
+        if not coube:
+            raise PDFEditError(
+                'O texto novo não coube na página. Encurte o texto ou reduza o tamanho da fonte.'
+            )
+        choice.overflowed = linhas > 1
+        resultado.append(choice)
+    return resultado
 
 
 def insert_free_text(doc: fitz.Document, page: fitz.Page, point: Tuple[float, float],

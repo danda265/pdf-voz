@@ -3,8 +3,8 @@ from __future__ import annotations
 from typing import List, Optional, Tuple
 
 import fitz
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor, QFont, QImage, QMouseEvent, QPixmap
+from PyQt6.QtCore import QPointF, QRectF, Qt, pyqtSignal
+from PyQt6.QtGui import QColor, QFont, QImage, QMouseEvent, QPainter, QPen, QPixmap
 from PyQt6.QtWidgets import (
     QColorDialog, QComboBox, QFontComboBox, QHBoxLayout, QLabel, QPlainTextEdit,
     QPushButton,
@@ -30,22 +30,41 @@ def span_at_point(spans: List[TextSpan], point: Tuple[float, float]) -> Optional
 LIMIAR_ARRASTO = 5
 
 
+def spans_na_area(spans: List[TextSpan], area: Tuple[float, float, float, float]) -> List[TextSpan]:
+    """Trechos que encostam no retangulo (coordenadas do documento), de cima para baixo.
+
+    Encostar basta — exigir que o trecho caiba inteiro obrigaria o usuario a envolver as
+    linhas com precisao de pixel."""
+    ax0, ay0, ax1, ay1 = min(area[0], area[2]), min(area[1], area[3]), \
+                         max(area[0], area[2]), max(area[1], area[3])
+    dentro = [s for s in spans
+              if s.bbox[0] <= ax1 and s.bbox[2] >= ax0
+              and s.bbox[1] <= ay1 and s.bbox[3] >= ay0]
+    return sorted(dentro, key=lambda s: (round(s.bbox[1], 1), s.bbox[0]))
+
+
 class PageCanvas(QLabel):
     span_clicked = pyqtSignal(object)             # TextSpan
     free_area_clicked = pyqtSignal(float, float)   # ponto em coordenadas do documento (pontos PDF)
     span_moved = pyqtSignal(object, float, float)  # TextSpan, dx, dy (em pontos do PDF)
+    spans_selected = pyqtSignal(list)              # varios TextSpan de uma vez
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.zoom = DEFAULT_ZOOM
         self.spans: List[TextSpan] = []
         self.add_mode = False
+        self.selecionados: List[TextSpan] = []
         self._span_pressionado: Optional[TextSpan] = None
         self._pos_inicial = None
+        self._pos_atual = None
         self._arrastando = False
+        self._marcando = False   # desenhando o retangulo de selecao
+        self._previa = ([], 0.0, 0.0)   # (spans, dx, dy) — para onde o texto vai
 
     def show_page(self, page: fitz.Page, spans: List[TextSpan]) -> None:
         self.spans = spans
+        self.selecionados = []
         pix = page.get_pixmap(matrix=fitz.Matrix(self.zoom, self.zoom))
         image = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format.Format_RGB888)
         self.setPixmap(QPixmap.fromImage(image.copy()))
@@ -56,11 +75,23 @@ class PageCanvas(QLabel):
         self.add_mode = enabled
         self._cancelar_arrasto()
 
+    def destacar(self, spans: List[TextSpan]) -> None:
+        self.selecionados = list(spans)
+        self.update()
+
+    def previsualizar(self, spans: List[TextSpan], dx: float, dy: float) -> None:
+        """Mostra na página para onde o texto vai antes de confirmar."""
+        self._previa = (list(spans), dx, dy)
+        self.update()
+
     def _cancelar_arrasto(self) -> None:
         self._span_pressionado = None
         self._pos_inicial = None
+        self._pos_atual = None
         self._arrastando = False
+        self._marcando = False
         self.unsetCursor()
+        self.update()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() != Qt.MouseButton.LeftButton:
@@ -70,30 +101,88 @@ class PageCanvas(QLabel):
         if self.add_mode:
             self.free_area_clicked.emit(doc_x, doc_y)
             return
-        # O clique so vira edicao ou arrasto no release: ate la nao da para saber qual dos
-        # dois o usuario quis.
+        # Em cima de um texto: vira edicao (clique) ou movimento (arrasto). Em area vazia:
+        # vira retangulo de selecao. So da para saber qual no release.
         self._span_pressionado = span_at_point(self.spans, (doc_x, doc_y))
+        self._marcando = self._span_pressionado is None
         self._pos_inicial = event.position()
+        self._pos_atual = event.position()
         self._arrastando = False
 
     def mouseMoveEvent(self, event: QMouseEvent) -> None:
-        if self._span_pressionado is None or self._pos_inicial is None:
+        if self._pos_inicial is None:
             return
+        self._pos_atual = event.position()
         percorrido = (event.position() - self._pos_inicial).manhattanLength()
         if not self._arrastando and percorrido > LIMIAR_ARRASTO:
             self._arrastando = True
-            self.setCursor(Qt.CursorShape.ClosedHandCursor)
+            if not self._marcando:
+                self.setCursor(Qt.CursorShape.ClosedHandCursor)
+        if self._marcando and self._arrastando:
+            self.update()   # redesenha o retangulo em tempo real
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
-        if event.button() != Qt.MouseButton.LeftButton or self._span_pressionado is None:
+        if event.button() != Qt.MouseButton.LeftButton or self._pos_inicial is None:
             return
-        span, inicial, arrastando = self._span_pressionado, self._pos_inicial, self._arrastando
+        span, inicial = self._span_pressionado, self._pos_inicial
+        arrastando, marcando = self._arrastando, self._marcando
+        fim = event.position()
         self._cancelar_arrasto()
+
+        if marcando:
+            if not arrastando:
+                return   # clique solto em area vazia: nao faz nada
+            area = (inicial.x() / self.zoom, inicial.y() / self.zoom,
+                    fim.x() / self.zoom, fim.y() / self.zoom)
+            escolhidos = spans_na_area(self.spans, area)
+            if escolhidos:
+                self.destacar(escolhidos)
+                self.spans_selected.emit(escolhidos)
+            return
+
+        if span is None:
+            return
         if not arrastando:
             self.span_clicked.emit(span)
             return
-        delta = event.position() - inicial
+        delta = fim - inicial
         self.span_moved.emit(span, delta.x() / self.zoom, delta.y() / self.zoom)
+
+    def paintEvent(self, event) -> None:
+        super().paintEvent(event)
+        previa_spans, pdx, pdy = self._previa
+        tem_previa = previa_spans and (abs(pdx) > 0.01 or abs(pdy) > 0.01)
+        if not self.selecionados and not tem_previa and not (self._marcando and self._arrastando):
+            return
+        pintor = QPainter(self)
+        for span in self.selecionados:
+            x0, y0, x1, y1 = (v * self.zoom for v in span.bbox)
+            pintor.fillRect(QRectF(x0, y0, x1 - x0, y1 - y0), QColor(59, 130, 246, 60))
+
+        if tem_previa:
+            # Fantasma na posição de destino: o retângulo de origem riscado e o texto
+            # desenhado onde vai parar.
+            pintor.setPen(QPen(QColor(148, 163, 184), 1, Qt.PenStyle.DotLine))
+            for span in previa_spans:
+                x0, y0, x1, y1 = (v * self.zoom for v in span.bbox)
+                pintor.drawRect(QRectF(x0, y0, x1 - x0, y1 - y0))
+            pintor.setPen(QPen(QColor(217, 119, 6)))
+            for span in previa_spans:
+                fonte = QFont(familia_legivel(span.font_name))
+                fonte.setPixelSize(max(1, int(span.size * self.zoom)))
+                fonte.setBold(span.bold)
+                fonte.setItalic(span.italic)
+                pintor.setFont(fonte)
+                pintor.drawText(
+                    QPointF((span.origin[0] + pdx) * self.zoom,
+                            (span.origin[1] + pdy) * self.zoom),
+                    span.text,
+                )
+
+        if self._marcando and self._arrastando and self._pos_atual is not None:
+            pintor.setPen(QPen(QColor(59, 130, 246), 1, Qt.PenStyle.DashLine))
+            pintor.drawRect(QRectF(self._pos_inicial, self._pos_atual).normalized())
+        pintor.end()
 
 
 class PageScrollArea(QScrollArea):
@@ -108,17 +197,25 @@ PASSO_SETA = 2.0   # pontos do PDF por clique nas setas (~0,7 mm)
 
 
 class SpanEditPopup(QWidget):
-    # span (ou None), texto novo, FormatOverride, deslocamento (dx, dy) em pontos do PDF
-    confirmed = pyqtSignal(object, str, object, object)
+    # lista de TextSpan (ou None para texto novo), lista de textos, FormatOverride,
+    # deslocamento (dx, dy) em pontos do PDF
+    confirmed = pyqtSignal(object, object, object, object)
     cancelled = pyqtSignal()
+    posicao_mudou = pyqtSignal(object, float, float)   # spans, dx, dy — para a prévia
 
     def __init__(self, parent: QWidget):
-        super().__init__(parent, Qt.WindowType.Popup)
-        self._span: Optional[TextSpan] = None
+        # Janela de ferramenta, não popup: pode ser arrastada pela barra de título para
+        # sair da frente do texto, e não se fecha sozinha ao clicar fora.
+        super().__init__(parent, Qt.WindowType.Tool)
+        self.setWindowTitle('Editar trecho')
+        self._spans: List[TextSpan] = []
         self._color: Tuple[float, float, float] = (0.0, 0.0, 0.0)
-        self._family_touched = False   # o usuário escolheu outra fonte nesta edição?
         self._deslocamento = [0.0, 0.0]
         self._alinhamento = None
+        # Estado dos controles quando o popup abriu. Comparar contra ele diz o que o
+        # usuário mexeu de fato — e só isso entra no override, para cada trecho manter a
+        # própria formatação no que ele não tocou.
+        self._inicial = {}
         self._build_ui()
 
     def _build_ui(self) -> None:
@@ -176,7 +273,6 @@ class SpanEditPopup(QWidget):
         self.font_combo.setEditable(False)
         self.font_combo.setMinimumWidth(190)
         self.font_combo.setToolTip('Fonte — clique para ver a lista completa')
-        self.font_combo.currentFontChanged.connect(self._on_family_changed)
         self.color_btn = QPushButton('Cor')
         self.color_btn.clicked.connect(self._pick_color)
         toolbar.addWidget(self.bold_btn)
@@ -259,22 +355,24 @@ class SpanEditPopup(QWidget):
     def open_for_span(self, span: TextSpan, global_pos, deslocamento=(0.0, 0.0)) -> None:
         """`deslocamento` chega preenchido quando o popup abre depois de um arrasto, para
         o usuário poder ajustar fino nas setas antes de confirmar."""
-        self._span = span
+        self.open_for_spans([span], global_pos, deslocamento)
+
+    def open_for_spans(self, spans: List[TextSpan], global_pos,
+                       deslocamento=(0.0, 0.0)) -> None:
+        """Abre para um ou vários trechos. Com vários, cada linha da caixa corresponde a
+        um trecho, e os controles de formatação começam mostrando os do primeiro."""
+        self._spans = list(spans)
+        span = spans[0]
         self._deslocamento = [float(deslocamento[0]), float(deslocamento[1])]
         self._atualizar_deslocamento_lbl()
         self._escolher_alinhamento(None)
         self.entrelinha_combo.setCurrentIndex(0)
-        self.text_input.setPlainText(span.text)
+        self.text_input.setPlainText('\n'.join(s.text for s in spans))
         self.bold_btn.setChecked(span.bold)
         self.italic_btn.setChecked(span.italic)
         self.size_spin.setValue(int(span.size))
         familia = familia_legivel(span.font_name)
-        # setCurrentFont dispara currentFontChanged; bloquear evita marcar como
-        # "usuário trocou a fonte" o que é só o preenchimento inicial do popup.
-        self.font_combo.blockSignals(True)
         self.font_combo.setCurrentFont(QFont(familia))
-        self.font_combo.blockSignals(False)
-        self._family_touched = False
         reconhecida = self.font_combo.currentFont().family().lower() == familia.lower()
         self.origem_lbl.setText(
             f'Fonte no PDF: {familia}'
@@ -282,13 +380,23 @@ class SpanEditPopup(QWidget):
             f'Fonte no PDF: {familia} — não está instalada; escolha a mais parecida na lista'
         )
         self._color = span.color
+        formatos = {(s.size, s.bold, s.italic, s.color) for s in spans}
+        if len(spans) > 1:
+            self.dica_lbl.setText(
+                f'{len(spans)} trechos · uma linha da caixa por trecho · Ctrl+Enter confirma'
+                + (' · formatações diferentes: só muda o que você mexer' if len(formatos) > 1 else '')
+            )
+        else:
+            self.dica_lbl.setText('Enter quebra a linha · Ctrl+Enter confirma')
+        self._guardar_estado_inicial()
         self.move(global_pos)
         self.show()
+        self._avisar_posicao()
         self.text_input.setFocus()
         self.text_input.selectAll()
 
     def open_for_new_text(self, global_pos) -> None:
-        self._span = None
+        self._spans = []
         self._deslocamento = [0.0, 0.0]
         self._atualizar_deslocamento_lbl()
         # Texto novo já é colocado onde o usuário clicou; mover/centralizar não se aplica.
@@ -298,9 +406,10 @@ class SpanEditPopup(QWidget):
         self.bold_btn.setChecked(False)
         self.italic_btn.setChecked(False)
         self.size_spin.setValue(12)
-        self._family_touched = False
         self.origem_lbl.setText('Texto novo — escolha a fonte na lista')
+        self.dica_lbl.setText('Enter quebra a linha · Ctrl+Enter confirma')
         self._color = (0.0, 0.0, 0.0)
+        self._guardar_estado_inicial()
         self.move(global_pos)
         self.show()
         self.text_input.setFocus()
@@ -311,6 +420,28 @@ class SpanEditPopup(QWidget):
         self._deslocamento[0] += dx
         self._deslocamento[1] += dy
         self._atualizar_deslocamento_lbl()
+        self._avisar_posicao()
+
+    def _avisar_posicao(self) -> None:
+        """Pede a prévia na página — sem isso o usuário só descobre onde o texto foi parar
+        depois de confirmar."""
+        self.posicao_mudou.emit(self._spans, self._deslocamento[0], self._deslocamento[1])
+
+    def _guardar_estado_inicial(self) -> None:
+        self._inicial = {
+            'bold': self.bold_btn.isChecked(),
+            'italic': self.italic_btn.isChecked(),
+            'size': float(self.size_spin.value()),
+            'color': self._color,
+            'family': self.font_combo.currentFont().family(),
+        }
+
+    def _mudou(self, campo, valor):
+        """Devolve `valor` só se o usuário tiver mexido naquele controle; senão None.
+
+        É o que permite alinhar vários trechos de formatações diferentes sem uniformizar:
+        o que não foi tocado não vai no override, e cada trecho mantém o que já tinha."""
+        return valor if self._inicial.get(campo) != valor else None
 
     def _escolher_alinhamento(self, chave) -> None:
         """Botões de alinhamento funcionam como rádio: só um fica marcado."""
@@ -321,6 +452,7 @@ class SpanEditPopup(QWidget):
     def _reset_posicao(self) -> None:
         self._deslocamento = [0.0, 0.0]
         self._atualizar_deslocamento_lbl()
+        self._avisar_posicao()
 
     def _atualizar_deslocamento_lbl(self) -> None:
         dx, dy = self._deslocamento
@@ -328,9 +460,6 @@ class SpanEditPopup(QWidget):
             self.deslocamento_lbl.setText('na posição original')
         else:
             self.deslocamento_lbl.setText(f'deslocado {dx:+.0f}, {dy:+.0f} pt')
-
-    def _on_family_changed(self, _font) -> None:
-        self._family_touched = True
 
     def _pick_color(self) -> None:
         r, g, b = (int(c * 255) for c in self._color)
@@ -340,23 +469,30 @@ class SpanEditPopup(QWidget):
 
     def _confirm(self) -> None:
         override = FormatOverride(
-            bold=self.bold_btn.isChecked(),
-            italic=self.italic_btn.isChecked(),
-            size=float(self.size_spin.value()),
-            color=self._color,
+            bold=self._mudou('bold', self.bold_btn.isChecked()),
+            italic=self._mudou('italic', self.italic_btn.isChecked()),
+            size=self._mudou('size', float(self.size_spin.value())),
+            color=self._mudou('color', self._color),
             # Só manda família quando o usuário trocou de fonte de propósito. O nome
             # que o PDF traz costuma vir com prefixo de subset ("ABCDEF+TimesNewRoman"),
             # que o QFontComboBox resolve para uma família genérica — mandá-lo sempre
             # impediria o motor de reencontrar e reutilizar a fonte embutida original.
-            family=self.font_combo.currentFont().family() if self._family_touched else None,
+            family=self._mudou('family', self.font_combo.currentFont().family()),
             alinhamento=self._alinhamento,
             entrelinha=self.entrelinha_combo.currentData(),
         )
-        self.confirmed.emit(self._span, self.text_input.toPlainText(), override,
-                            tuple(self._deslocamento))
+        linhas = self.text_input.toPlainText().split('\n')
+        if self._spans:
+            # uma linha da caixa por trecho; o que sobrar vai junto com o último
+            textos = linhas[:len(self._spans) - 1]
+            textos.append('\n'.join(linhas[len(self._spans) - 1:]))
+            self.confirmed.emit(self._spans, textos, override, tuple(self._deslocamento))
+        else:
+            self.confirmed.emit(None, ['\n'.join(linhas)], override, tuple(self._deslocamento))
         self.hide()
 
     def _cancel(self) -> None:
+        self.posicao_mudou.emit([], 0.0, 0.0)
         self.cancelled.emit()
         self.hide()
 

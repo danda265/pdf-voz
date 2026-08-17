@@ -466,3 +466,58 @@ def test_texto_que_nao_cabe_de_jeito_nenhum_levanta_erro_em_vez_de_sumir(sample_
     with pytest.raises(PDFEditError):
         replace_span_text(doc, page, span, 'palavra ' * 4000, FormatOverride(size=60.0))
     doc.close()
+
+
+def test_replace_spans_text_preserva_a_formatacao_de_cada_linha(tmp_path):
+    """Selecionar varias linhas nao pode uniformizar a formatacao delas: cada uma
+    mantem tamanho e cor proprios quando o usuario nao mexe nesses controles."""
+    from pdf_editor import replace_spans_text
+
+    caminho = tmp_path / 'misto.pdf'
+    d = fitz.open()
+    pg = d.new_page(width=595, height=842)
+    pg.insert_text((72, 100), 'TITULO GRANDE', fontsize=20, fontname='helv', color=(1, 0, 0))
+    pg.insert_text((72, 140), 'corpo pequeno', fontsize=10, fontname='helv', color=(0, 0, 0))
+    d.save(str(caminho)); d.close()
+
+    doc = fitz.open(str(caminho))
+    page = doc[0]
+    spans = spans_for_page(page)
+    grande = next(s for s in spans if s.text.strip() == 'TITULO GRANDE')
+    pequeno = next(s for s in spans if s.text.strip() == 'corpo pequeno')
+
+    # so alinhamento no override — nada de tamanho/cor
+    replace_spans_text(doc, page, [grande, pequeno], ['TITULO NOVO', 'corpo novo'],
+                       FormatOverride(alinhamento='centro'))
+
+    novos = spans_for_page(page)
+    n_grande = next(s for s in novos if s.text.strip() == 'TITULO NOVO')
+    n_pequeno = next(s for s in novos if s.text.strip() == 'corpo novo')
+    doc.close()
+    assert abs(n_grande.size - 20.0) < 0.5     # cada um manteve o seu tamanho
+    assert abs(n_pequeno.size - 10.0) < 0.5
+    assert n_grande.color[0] > 0.9             # e a sua cor
+    assert sum(n_pequeno.color) < 0.1
+
+
+def test_replace_spans_text_aplica_a_todos_o_que_o_usuario_mudou(tmp_path):
+    from pdf_editor import replace_spans_text
+
+    caminho = tmp_path / 'misto2.pdf'
+    d = fitz.open()
+    pg = d.new_page(width=595, height=842)
+    pg.insert_text((72, 100), 'primeira', fontsize=20, fontname='helv')
+    pg.insert_text((72, 140), 'segunda', fontsize=10, fontname='helv')
+    d.save(str(caminho)); d.close()
+
+    doc = fitz.open(str(caminho))
+    page = doc[0]
+    spans = spans_for_page(page)
+    alvos = [next(s for s in spans if s.text.strip() == t) for t in ('primeira', 'segunda')]
+
+    replace_spans_text(doc, page, alvos, ['primeira', 'segunda'], FormatOverride(size=14.0))
+
+    novos = spans_for_page(page)
+    doc.close()
+    for texto in ('primeira', 'segunda'):
+        assert abs(next(s for s in novos if s.text.strip() == texto).size - 14.0) < 0.5
