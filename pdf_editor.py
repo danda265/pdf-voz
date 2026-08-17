@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -75,6 +76,20 @@ _BASE14_SANS = {(False, False): 'helv', (False, True): 'heit', (True, False): 'h
 _BASE14_SERIF = {(False, False): 'tiro', (False, True): 'tiit', (True, False): 'tibo', (True, True): 'tibi'}
 
 
+def familia_legivel(font_name: str) -> str:
+    """Nome de familia apresentavel a partir do nome bruto que o PDF traz.
+
+    O PDF guarda a fonte com prefixo de subset e sufixo de estilo — 'ABCDEF+Calibri-Bold',
+    'Times New Roman Regular', 'ArialMT'. Esses nomes nao casam com nenhuma fonte instalada,
+    entao o seletor cairia num padrao qualquer. Aqui viram 'Calibri', 'Times New Roman',
+    'Arial', que o sistema reconhece."""
+    nome = re.sub(r'^[A-Z]{6}\+', '', font_name or '')
+    nome = re.split(r'[-,]', nome)[0]
+    nome = re.sub(r'(PSMT|MT|PS)$', '', nome)
+    nome = re.sub(r'\s+(Regular|Bold|Italic|Oblique|Light|Medium|Black)$', '', nome, flags=re.I)
+    return nome.strip() or font_name
+
+
 def _normalize_family(name: str) -> dict:
     base = re.sub(r'^[A-Z]{6}\+', '', name)
     lowered = base.lower()
@@ -105,6 +120,50 @@ def _embedded_font_buffer(doc: fitz.Document, page: fitz.Page, family_hint: Opti
     return None, None
 
 
+# Fontes do Windows cujo arquivo nao se chama como a familia
+_ALIAS_ARQUIVO = {
+    'timesnewroman': 'times',
+    'couriernew': 'cour',
+    'lucidaconsole': 'lucon',
+    'comicsansms': 'comic',
+    'trebuchetms': 'trebuc',
+    'palatinolinotype': 'pala',
+    'bookantiqua': 'bkant',
+    'centurygothic': 'gothic',
+}
+
+# Sufixos de estilo no nome do arquivo: arial/arialbd/ariali/arialbi, calibri/calibrib/.../calibriz
+_SUFIXOS_ESTILO = {
+    (False, False): ('',),
+    (True,  False): ('bd', 'b'),
+    (False, True):  ('i',),
+    (True,  True):  ('bi', 'z'),
+}
+
+
+def _fonte_do_sistema(family: str, bold: bool, italic: bool) -> Optional[Tuple[str, bytes]]:
+    """Carrega a fonte instalada correspondente a familia pedida.
+
+    Sem isso, escolher 'Calibri' na lista entregaria Helvetica: o motor so tinha as 14
+    fontes embutidas do PDF como alternativa. Aqui a fonte real do sistema e usada."""
+    raiz = re.sub(r'[^a-z0-9]', '', (family or '').lower())
+    if not raiz:
+        return None
+    raiz = _ALIAS_ARQUIVO.get(raiz, raiz)
+    pasta = Path(os.environ.get('WINDIR', r'C:\Windows')) / 'Fonts'
+    for sufixo in _SUFIXOS_ESTILO[(bold, italic)]:
+        for extensao in ('.ttf', '.otf'):
+            caminho = pasta / f'{raiz}{sufixo}{extensao}'
+            if not caminho.is_file():
+                continue
+            try:
+                dados = caminho.read_bytes()
+            except OSError:
+                continue
+            return f'SYS{raiz}{sufixo}', dados
+    return None
+
+
 def _desenha_o_texto(fontbuffer: bytes, text: str) -> bool:
     """A fonte embutida consegue mesmo desenhar este texto?
 
@@ -130,10 +189,17 @@ def resolve_font(doc: fitz.Document, page: fitz.Page, span: Optional[TextSpan],
     color = override.color if override.color is not None else (span.color if span else (0.0, 0.0, 0.0))
     family_hint = override.family if override.family else (span.font_name if span else None)
 
+    # 1º: a propria fonte embutida no PDF — e a unica que reproduz o visual exato.
     fontname, fontbuffer = _embedded_font_buffer(doc, page, family_hint, bold, italic)
     if fontbuffer and _desenha_o_texto(fontbuffer, text):
         return FontChoice(fontname, fontbuffer, size, color, used_fallback=False)
 
+    # 2º: a fonte instalada no sistema com o mesmo nome — visualmente equivalente.
+    do_sistema = _fonte_do_sistema(familia_legivel(family_hint or ''), bold, italic)
+    if do_sistema and _desenha_o_texto(do_sistema[1], text):
+        return FontChoice(do_sistema[0], do_sistema[1], size, color, used_fallback=False)
+
+    # 3º: base14 — sempre funciona, mas so aproxima o desenho da letra.
     if span is not None and not override.family:
         serifed = span.serifed
     else:

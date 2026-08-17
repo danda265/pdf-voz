@@ -10,7 +10,7 @@ from PyQt6.QtWidgets import (
     QScrollArea, QSpinBox, QToolButton, QVBoxLayout, QWidget,
 )
 
-from pdf_editor import FormatOverride, TextSpan
+from pdf_editor import FormatOverride, TextSpan, familia_legivel
 
 DEFAULT_ZOOM = 1.5
 
@@ -77,6 +77,26 @@ class SpanEditPopup(QWidget):
         self._build_ui()
 
     def _build_ui(self) -> None:
+        self.setMinimumWidth(560)
+        # Estilo próprio: a folha de estilo da janela principal zera a seta do combo
+        # (::drop-down sem imagem), deixando o seletor de fonte sem cara de lista.
+        self.setStyleSheet("""
+            QWidget { background:#FFFFFF; color:#0F172A; }
+            QComboBox, QLineEdit, QSpinBox {
+                background:#FFFFFF; color:#0F172A;
+                border:1.5px solid #CBD5E1; border-radius:6px; padding:5px 8px; min-height:28px;
+            }
+            QComboBox::drop-down { subcontrol-origin:padding; subcontrol-position:center right;
+                                   width:20px; border:none; }
+            QComboBox::down-arrow { image:none; width:0; height:0; margin-right:7px;
+                                    border-left:5px solid transparent;
+                                    border-right:5px solid transparent;
+                                    border-top:6px solid #475569; }
+            QComboBox QAbstractItemView { background:#FFFFFF; color:#0F172A;
+                                          selection-background-color:#3B82F6; selection-color:#FFFFFF; }
+            QLabel { color:#475569; font-size:12px; }
+            #FonteOrigem { color:#64748B; font-size:11px; }
+        """)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
 
@@ -87,23 +107,38 @@ class SpanEditPopup(QWidget):
         toolbar = QHBoxLayout()
         self.bold_btn = QToolButton()
         self.bold_btn.setText('N')
+        self.bold_btn.setToolTip('Negrito')
         self.bold_btn.setCheckable(True)
         self.italic_btn = QToolButton()
         self.italic_btn.setText('I')
+        self.italic_btn.setToolTip('Itálico')
         self.italic_btn.setCheckable(True)
         self.size_spin = QSpinBox()
         self.size_spin.setRange(6, 96)
         self.size_spin.setValue(12)
+        self.size_spin.setToolTip('Tamanho da fonte')
         self.font_combo = QFontComboBox()
+        # Não-editável: clicar em qualquer ponto abre a lista de fontes. Editável, o
+        # campo parecia uma caixa de texto comum e a lista ficava escondida.
+        self.font_combo.setEditable(False)
+        self.font_combo.setMinimumWidth(190)
+        self.font_combo.setToolTip('Fonte — clique para ver a lista completa')
         self.font_combo.currentFontChanged.connect(self._on_family_changed)
         self.color_btn = QPushButton('Cor')
         self.color_btn.clicked.connect(self._pick_color)
         toolbar.addWidget(self.bold_btn)
         toolbar.addWidget(self.italic_btn)
         toolbar.addWidget(self.size_spin)
-        toolbar.addWidget(self.font_combo)
+        toolbar.addWidget(QLabel('Fonte'))
+        toolbar.addWidget(self.font_combo, 1)
         toolbar.addWidget(self.color_btn)
         layout.addLayout(toolbar)
+
+        # Mostra a fonte que o PDF declara para o trecho — sem isso não há como saber
+        # qual escolher na lista quando o casamento automático não acerta.
+        self.origem_lbl = QLabel('')
+        self.origem_lbl.setObjectName('FonteOrigem')
+        layout.addWidget(self.origem_lbl)
 
         buttons = QHBoxLayout()
         ok_btn = QPushButton('OK')
@@ -120,12 +155,19 @@ class SpanEditPopup(QWidget):
         self.bold_btn.setChecked(span.bold)
         self.italic_btn.setChecked(span.italic)
         self.size_spin.setValue(int(span.size))
+        familia = familia_legivel(span.font_name)
         # setCurrentFont dispara currentFontChanged; bloquear evita marcar como
         # "usuário trocou a fonte" o que é só o preenchimento inicial do popup.
         self.font_combo.blockSignals(True)
-        self.font_combo.setCurrentFont(QFont(span.font_name))
+        self.font_combo.setCurrentFont(QFont(familia))
         self.font_combo.blockSignals(False)
         self._family_touched = False
+        reconhecida = self.font_combo.currentFont().family().lower() == familia.lower()
+        self.origem_lbl.setText(
+            f'Fonte no PDF: {familia}'
+            if reconhecida else
+            f'Fonte no PDF: {familia} — não está instalada; escolha a mais parecida na lista'
+        )
         self._color = span.color
         self.move(global_pos)
         self.show()
@@ -139,6 +181,7 @@ class SpanEditPopup(QWidget):
         self.italic_btn.setChecked(False)
         self.size_spin.setValue(12)
         self._family_touched = False
+        self.origem_lbl.setText('Texto novo — escolha a fonte na lista')
         self._color = (0.0, 0.0, 0.0)
         self.move(global_pos)
         self.show()

@@ -7,8 +7,10 @@ import fitz
 import pytest
 
 from pdf_editor import (FormatOverride, TextSpan, resolve_font, spans_for_page, replace_span_text,
+                        _desenha_o_texto,
                         insert_free_text, PDFEditError, open_for_edit, save_copy, EditSession)
 from pdf_editor_view import span_at_point
+from utils import clean_text
 
 ARIAL_PATH = r'C:\Windows\Fonts\arial.ttf'
 
@@ -54,11 +56,29 @@ def test_resolve_font_falls_back_when_family_not_embedded(sample_pdf):
     doc = fitz.open(str(sample_pdf))
     page = doc[0]
     span = spans_for_page(page)[0]
-    override = FormatOverride(family='Comic Sans MS')
-    choice = resolve_font(doc, page, span, override)
+    override = FormatOverride(family='FonteQueNaoExisteEmLugarNenhum')
+    choice = resolve_font(doc, page, span, override, text='texto novo')
     doc.close()
+    # Sem fonte embutida nem instalada com esse nome, sobra o base14 — e o usuario
+    # precisa ser avisado de que o desenho da letra e so aproximado.
     assert choice.used_fallback is True
-    assert choice.fontname in ('helv', 'heit', 'hebo', 'hebi', 'tiro', 'tibo', 'tiit', 'tibi')
+    assert choice.fontbuffer is None
+    assert choice.fontname == 'helv'   # sem serifa, sem negrito, sem italico
+
+
+def test_resolve_font_uses_real_system_font_when_family_is_installed(sample_pdf):
+    """Familia instalada no Windows tem de vir de verdade, sem cair no base14."""
+    from pdf_editor import _fonte_do_sistema
+
+    if _fonte_do_sistema('Comic Sans MS', bold=False, italic=False) is None:
+        pytest.skip('Comic Sans MS nao instalada neste sistema')
+    doc = fitz.open(str(sample_pdf))
+    page = doc[0]
+    span = spans_for_page(page)[0]
+    choice = resolve_font(doc, page, span, FormatOverride(family='Comic Sans MS'), text='texto novo')
+    doc.close()
+    assert choice.used_fallback is False
+    assert fitz.Font(fontbuffer=choice.fontbuffer).has_glyph(ord('a'))
 
 
 def test_resolve_font_fallback_prefers_span_serifed_over_name_heuristic(sample_pdf):
@@ -260,9 +280,11 @@ def test_replace_span_text_avoids_subset_font_that_cannot_draw_the_text(subset_f
     choice = replace_span_text(doc, page, span, 'texto novo legivel')
     texto = page.get_text()
     doc.close()
-    assert choice.used_fallback is True          # caiu no base14 em vez do subset quebrado
-    assert choice.fontbuffer is None
-    assert 'texto novo legivel' in texto
+    # O subset quebrado nao pode ser usado; o que entrar no lugar tem de saber
+    # desenhar as letras (senao o usuario ve caixinhas).
+    assert choice.fontbuffer is None or _desenha_o_texto(choice.fontbuffer, 'texto novo legivel')
+    # clean_text normaliza o espaço não-separável que fontes reais gravam no lugar do espaço
+    assert 'texto novo legivel' in clean_text(texto)
 
 
 def test_desenha_o_texto_rejects_subset_without_usable_cmap(subset_font_pdf):
@@ -275,3 +297,48 @@ def test_desenha_o_texto_rejects_subset_without_usable_cmap(subset_font_pdf):
     doc.close()
     assert buf is not None                        # a fonte embutida É encontrada...
     assert _desenha_o_texto(buf, 'abc') is False   # ...mas não consegue desenhar o texto
+
+
+@pytest.mark.parametrize('bruto, esperado', [
+    ('ABCDEF+Calibri-Bold', 'Calibri'),
+    ('Times New Roman Regular', 'Times New Roman'),
+    ('ArialMT', 'Arial'),
+    ('Calibri,Bold', 'Calibri'),
+    ('Verdana', 'Verdana'),
+])
+def test_familia_legivel_limpa_o_nome_bruto_do_pdf(bruto, esperado):
+    from pdf_editor import familia_legivel
+    assert familia_legivel(bruto) == esperado
+
+
+def test_fonte_do_sistema_carrega_arquivo_real_do_windows():
+    from pdf_editor import _fonte_do_sistema
+
+    achado = _fonte_do_sistema('Arial', bold=False, italic=False)
+    if achado is None:
+        pytest.skip('Arial nao instalada neste sistema')
+    nome, dados = achado
+    assert nome.startswith('SYS')
+    assert len(dados) > 1000
+    assert fitz.Font(fontbuffer=dados).has_glyph(ord('a'))
+
+
+def test_resolve_font_prefers_system_font_over_base14_when_family_is_chosen(sample_pdf):
+    """Escolher 'Verdana' na lista tem de entregar Verdana de verdade, nao Helvetica."""
+    from pdf_editor import _fonte_do_sistema
+
+    if _fonte_do_sistema('Verdana', bold=False, italic=False) is None:
+        pytest.skip('Verdana nao instalada neste sistema')
+    doc = fitz.open(str(sample_pdf))
+    page = doc[0]
+    span = spans_for_page(page)[0]
+    choice = resolve_font(doc, page, span, FormatOverride(family='Verdana'), text='texto novo')
+    doc.close()
+    assert choice.used_fallback is False
+    assert choice.fontbuffer is not None
+    assert choice.fontname.startswith('SYS')
+
+
+def test_clean_text_normaliza_espaco_nao_separavel():
+    """Fontes reais gravam \xa0 no lugar do espaco; a leitura em voz nao pode engasgar nisso."""
+    assert clean_text('texto\xa0com\xa0espacos') == 'texto com espacos'

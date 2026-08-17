@@ -15,6 +15,7 @@ _LIGATURES = str.maketrans({
     0xFB00: 'ff',   # ﬀ
     0xFB05: 'ft',   # ﬅ
     0xFB06: 'st',   # ﬆ
+    0x00A0: ' ',    # espaço não-separável (comum em PDF de Word) → espaço normal
     0x00AD: None,   # soft hyphen
     0x200B: None,   # zero-width space
     0x200C: None,   # zero-width non-joiner
