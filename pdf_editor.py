@@ -348,6 +348,11 @@ def replace_spans_text(doc: fitz.Document, page: fitz.Page, spans: List[TextSpan
     So o que veio preenchido no `override` (porque o usuario mexeu naquele controle) e
     aplicado a todos; o resto de cada trecho continua como estava. Alinhamento, entrelinha
     e deslocamento valem para o conjunto."""
+    if len(textos) != len(spans):
+        raise PDFEditError(
+            f'Inconsistência interna: {len(spans)} trecho(s) para {len(textos)} texto(s). '
+            'A edição foi cancelada para não apagar texto sem substituto.'
+        )
     override = override or FormatOverride()
     # A mancha e medida antes de qualquer redacao: apagar os trechos selecionados a
     # encolheria, e alinhar por ela depois jogaria o texto para o lugar errado.

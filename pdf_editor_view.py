@@ -482,6 +482,9 @@ class SpanEditPopup(QWidget):
             # uma linha da caixa por trecho; o que sobrar vai junto com o último
             textos = linhas[:len(self._spans) - 1]
             textos.append('\n'.join(linhas[len(self._spans) - 1:]))
+            # Trechos sem linha correspondente recebem '' (apagar). Ficar de fora da
+            # lista seria pior: eles ja foram redigidos e sumiriam sem substituto.
+            textos += [''] * (len(self._spans) - len(textos))
             self.confirmed.emit(self._spans, textos, override, tuple(self._deslocamento))
         else:
             self.confirmed.emit(None, ['\n'.join(linhas)], override, tuple(self._deslocamento))

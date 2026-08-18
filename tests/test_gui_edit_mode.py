@@ -69,6 +69,8 @@ def test_fluxo_completo_editar_e_salvar_pela_interface(qtbot, sample_pdf, monkey
                         lambda *a, **k: salvos.append(a[-1]))
     monkeypatch.setattr(gui_mod.QMessageBox, 'critical',
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError(f'erro na UI: {a}')))
+    monkeypatch.setattr(gui_mod.QMessageBox, 'question',
+                        lambda *a, **k: gui_mod.QMessageBox.StandardButton.Discard)
 
     window = gui_mod.MainWindow()
     qtbot.addWidget(window)
@@ -80,7 +82,8 @@ def test_fluxo_completo_editar_e_salvar_pela_interface(qtbot, sample_pdf, monkey
     spans = spans_for_page(window.edit_session.doc[0])
     alvo = next(s for s in spans if s.text.strip() == 'Ola mundo')
 
-    # confirma uma edição exatamente como o popup faz
+    # passa pelo caminho real: abrir a caixa no trecho e então confirmar
+    window._on_span_clicked(alvo)
     window._on_popup_confirmed([alvo], ['Texto trocado'], FormatOverride(), (0.0, 0.0))
     assert 'Texto trocado' in window.edit_session.doc[0].get_text()
     assert 'Edição aplicada' in window.status_label.text()
@@ -103,6 +106,8 @@ def test_fluxo_de_varios_trechos_e_multilinha_pela_interface(qtbot, sample_pdf, 
 
     monkeypatch.setattr(gui_mod.QMessageBox, 'critical',
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError(f'erro na UI: {a}')))
+    monkeypatch.setattr(gui_mod.QMessageBox, 'question',
+                        lambda *a, **k: gui_mod.QMessageBox.StandardButton.Discard)
     window = gui_mod.MainWindow()
     qtbot.addWidget(window)
     window.current_file = str(sample_pdf)
@@ -110,6 +115,7 @@ def test_fluxo_de_varios_trechos_e_multilinha_pela_interface(qtbot, sample_pdf, 
     window.edit_mode_button.setChecked(True)
 
     spans = spans_for_page(window.edit_session.doc[0])
+    window._on_spans_selected(spans)
     window._on_popup_confirmed(spans, ['linha A\nlinha B'] + ['x'] * (len(spans) - 1),
                                FormatOverride(alinhamento='centro'), (0.0, 0.0))
 
@@ -146,3 +152,119 @@ def test_erro_inesperado_nao_derruba_o_app(qtbot, monkeypatch):
         window.close()
     finally:
         _sys.excepthook = hook_anterior
+
+
+def _pdf_duas_paginas(tmp_path):
+    caminho = tmp_path / 'duas.pdf'
+    d = fitz.open()
+    a = d.new_page(width=595, height=842)
+    a.insert_text((72, 100), 'PAGINA UM ALVO', fontsize=12, fontname='helv')
+    b = d.new_page(width=595, height=842)
+    b.insert_text((72, 100), 'PAGINA DOIS INTACTA', fontsize=12, fontname='helv')
+    d.save(str(caminho)); d.close()
+    return caminho
+
+
+def test_virar_pagina_com_a_caixa_aberta_nao_edita_a_pagina_errada(qtbot, tmp_path, monkeypatch):
+    """Verificado em uso: a edição ia parar na página exibida, apagando conteúdo real dela
+    com um bbox que pertencia a outra página."""
+    import gui as gui_mod
+    from pdf_editor import FormatOverride, spans_for_page
+
+    erros = []
+    monkeypatch.setattr(gui_mod.QMessageBox, 'critical', lambda *a, **k: erros.append(a))
+    monkeypatch.setattr(gui_mod.QMessageBox, 'question',
+                        lambda *a, **k: gui_mod.QMessageBox.StandardButton.Discard)
+
+    window = gui_mod.MainWindow()
+    qtbot.addWidget(window)
+    window.current_file = str(_pdf_duas_paginas(tmp_path))
+    window.edit_mode_button.setEnabled(True)
+    window.edit_mode_button.setChecked(True)
+
+    alvo = next(s for s in spans_for_page(window.edit_session.doc[0]) if 'UM ALVO' in s.text)
+    window._on_span_clicked(alvo)
+    pagina_dois_antes = window.edit_session.doc[1].get_text()
+
+    window._go_edit_page(1)   # vira a página com a caixa aberta
+    window._on_popup_confirmed([alvo], ['TROCADO'], FormatOverride(), (0.0, 0.0))
+
+    assert window.edit_session.doc[1].get_text() == pagina_dois_antes, 'mexeu na página errada'
+    assert 'PAGINA UM ALVO' in window.edit_session.doc[0].get_text(), 'editou fora de hora'
+    assert erros, 'deveria ter avisado que a página mudou'
+    window.edit_mode_button.setChecked(False)
+    window.close()
+
+
+def test_apagar_linhas_da_selecao_nao_faz_texto_sumir(qtbot, tmp_path, monkeypatch):
+    """Verificado em uso: selecionar 3 trechos e deixar 1 linha apagava os três da página
+    e escrevia só a linha digitada — os trechos sem par eram redigidos e esquecidos."""
+    import gui as gui_mod
+
+    monkeypatch.setattr(gui_mod.QMessageBox, 'critical',
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError(f'erro: {a}')))
+    monkeypatch.setattr(gui_mod.QMessageBox, 'question',
+                        lambda *a, **k: gui_mod.QMessageBox.StandardButton.Discard)
+
+    caminho = tmp_path / 'tres.pdf'
+    d = fitz.open()
+    pg = d.new_page(width=595, height=842)
+    for y, t in ((100, 'ALFA'), (130, 'BETA'), (160, 'GAMA')):
+        pg.insert_text((72, y), t, fontsize=12, fontname='helv')
+    d.save(str(caminho)); d.close()
+
+    window = gui_mod.MainWindow()
+    qtbot.addWidget(window)
+    window.current_file = str(caminho)
+    window.edit_mode_button.setEnabled(True)
+    window.edit_mode_button.setChecked(True)
+
+    from pdf_editor import spans_for_page
+    sel = spans_for_page(window.edit_session.doc[0])
+    assert len(sel) == 3
+    window._on_spans_selected(sel)
+    window.edit_popup.text_input.setPlainText('SO UMA LINHA')
+    window.edit_popup._confirm()
+
+    final = window.edit_session.doc[0].get_text()
+    assert 'SO UMA LINHA' in final
+    # os trechos sem linha correspondente viram remoção INTENCIONAL, nunca sumiço silencioso
+    assert window.edit_popup._spans == sel
+    window.edit_mode_button.setChecked(False)
+    window.close()
+
+
+def test_sair_com_edicoes_nao_salvas_pergunta_antes_de_descartar(qtbot, sample_pdf, monkeypatch):
+    """Verificado em uso: sair do modo edição jogava fora tudo sem uma palavra."""
+    import gui as gui_mod
+    from pdf_editor import FormatOverride, spans_for_page
+
+    perguntas = []
+
+    def responder(*a, **k):
+        perguntas.append(a)
+        return gui_mod.QMessageBox.StandardButton.Cancel   # usuário desiste de sair
+
+    monkeypatch.setattr(gui_mod.QMessageBox, 'question', responder)
+    window = gui_mod.MainWindow()
+    qtbot.addWidget(window)
+    window.current_file = str(sample_pdf)
+    window.edit_mode_button.setEnabled(True)
+    window.edit_mode_button.setChecked(True)
+
+    alvo = spans_for_page(window.edit_session.doc[0])[0]
+    window._on_span_clicked(alvo)
+    window._on_popup_confirmed([alvo], ['EDITADO'], FormatOverride(), (0.0, 0.0))
+    assert window._edicoes_pendentes is True
+
+    window.edit_mode_button.setChecked(False)   # tenta sair
+
+    assert perguntas, 'saiu sem perguntar'
+    assert window.edit_session is not None, 'descartou mesmo com o usuário cancelando'
+    assert 'EDITADO' in window.edit_session.doc[0].get_text()
+
+    monkeypatch.setattr(gui_mod.QMessageBox, 'question',
+                        lambda *a, **k: gui_mod.QMessageBox.StandardButton.Discard)
+    window.edit_mode_button.setChecked(False)
+    assert window.edit_session is None
+    window.close()

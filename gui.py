@@ -218,6 +218,8 @@ class MainWindow(QMainWindow):
         self.edit_session: Optional[EditSession] = None
         self.edit_page_index = 0
         self._pending_new_point: Tuple[float, float] = (0.0, 0.0)
+        self._pagina_da_caixa = -1        # pagina a que os trechos da caixa pertencem
+        self._edicoes_pendentes = False   # ha edicao aplicada e ainda nao salva?
 
         self._build_ui()
         self._apply_theme()
@@ -485,8 +487,33 @@ class MainWindow(QMainWindow):
     def _on_edit_mode_toggled(self, checked: bool) -> None:
         if checked:
             self._enter_edit_mode()
-        else:
+        elif self._confirmar_descarte():
             self._exit_edit_mode()
+        else:
+            # usuário desistiu de sair: volta o botão sem disparar o toggle de novo
+            self.edit_mode_button.blockSignals(True)
+            self.edit_mode_button.setChecked(True)
+            self.edit_mode_button.blockSignals(False)
+
+    def _confirmar_descarte(self) -> bool:
+        """Sair do modo edição fecha o documento e joga fora tudo que não foi salvo.
+        Fazer isso calado é perda de trabalho — pergunta antes."""
+        if not self._edicoes_pendentes:
+            return True
+        resposta = QMessageBox.question(
+            self, 'Edições não salvas',
+            'Você editou o PDF e ainda não salvou.' + chr(10) * 2 + 'Salvar uma cópia antes de sair?',
+            QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save,
+        )
+        if resposta == QMessageBox.StandardButton.Cancel:
+            return False
+        if resposta == QMessageBox.StandardButton.Save:
+            self._save_edited_copy()
+            if self._edicoes_pendentes:   # o salvamento falhou; não descarta
+                return False
+        return True
 
     def _enter_edit_mode(self) -> None:
         if not self.current_file:
@@ -504,6 +531,8 @@ class MainWindow(QMainWindow):
 
     def _exit_edit_mode(self) -> None:
         self.stack.setCurrentIndex(0)
+        self._edicoes_pendentes = False
+        self._pagina_da_caixa = -1
         # A caixa agora é janela flutuante: não some sozinha ao sair do modo edição.
         self.edit_popup.hide()
         self.edit_page_index = 0
@@ -526,6 +555,10 @@ class MainWindow(QMainWindow):
             return
         new_index = self.edit_page_index + delta
         if 0 <= new_index < self.edit_session.doc.page_count:
+            # Fecha a caixa: os trechos que ela guarda sao da pagina que esta saindo, e
+            # confirmar depois da troca aplicaria a edicao na pagina errada, apagando
+            # conteudo dela.
+            self.edit_popup.hide()
             self.edit_page_index = new_index
             self._render_edit_page()
 
@@ -534,6 +567,7 @@ class MainWindow(QMainWindow):
         primeiro = spans[0]
         local = QPoint(int(primeiro.origin[0] * self.edit_scroll.canvas.zoom),
                        int(primeiro.origin[1] * self.edit_scroll.canvas.zoom))
+        self._pagina_da_caixa = self.edit_page_index
         self.edit_popup.open_for_spans(spans, self.edit_scroll.canvas.mapToGlobal(local))
         self.status_label.setText(
             f'{len(spans)} trecho(s) selecionado(s) — edite, alinhe ou mova tudo de uma vez.'
@@ -543,11 +577,13 @@ class MainWindow(QMainWindow):
         self.edit_scroll.canvas.destacar([span])
         x, y = span.origin
         local = QPoint(int(x * self.edit_scroll.canvas.zoom), int(y * self.edit_scroll.canvas.zoom))
+        self._pagina_da_caixa = self.edit_page_index
         self.edit_popup.open_for_span(span, self.edit_scroll.canvas.mapToGlobal(local))
 
     def _on_free_area_clicked(self, x: float, y: float) -> None:
         self._pending_new_point = (x, y)
         local = QPoint(int(x * self.edit_scroll.canvas.zoom), int(y * self.edit_scroll.canvas.zoom))
+        self._pagina_da_caixa = self.edit_page_index
         self.edit_popup.open_for_new_text(self.edit_scroll.canvas.mapToGlobal(local))
 
     def _on_span_moved(self, span: TextSpan, dx: float, dy: float) -> None:
@@ -558,6 +594,7 @@ class MainWindow(QMainWindow):
         x, y = span.origin
         local = QPoint(int((x + dx) * self.edit_scroll.canvas.zoom),
                        int((y + dy) * self.edit_scroll.canvas.zoom))
+        self._pagina_da_caixa = self.edit_page_index
         self.edit_popup.open_for_span(span, self.edit_scroll.canvas.mapToGlobal(local), (dx, dy))
         self.status_label.setText(
             f'Trecho movido {dx:+.0f}, {dy:+.0f} pt — confirme em OK ou ajuste nas setas.'
@@ -566,6 +603,10 @@ class MainWindow(QMainWindow):
     def _on_popup_confirmed(self, spans, textos: list, override: FormatOverride,
                             deslocamento=(0.0, 0.0)) -> None:
         if not self.edit_session:
+            return
+        if spans and self._pagina_da_caixa != self.edit_page_index:
+            self._show_error('A página mudou desde que esta edição foi aberta. '
+                             'A edição foi cancelada para não alterar a página errada.')
             return
         page = self.edit_session.doc[self.edit_page_index]
         self.edit_session.snapshot()
@@ -586,6 +627,7 @@ class MainWindow(QMainWindow):
             self._render_edit_page()
             self._show_error(sanitize_error_message(str(exc)))
             return
+        self._edicoes_pendentes = True
         self._render_edit_page()
         avisos = []
         if any(c.used_fallback for c in escolhas):
