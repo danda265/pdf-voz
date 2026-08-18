@@ -30,7 +30,16 @@ Abra um PDF ou Word, escolha a voz e clique em **Ler**. Dá para ajustar velocid
 leitura, começar de uma página específica e exportar a narração em MP3.
 
 ### Editar um PDF
-Com um PDF aberto, clique em **Editar PDF**. A página aparece como imagem:
+Com um PDF aberto, clique em **Editar PDF**. O documento aparece como imagem e **rola contínuo**,
+como em qualquer leitor de PDF.
+
+Quatro gestos, sem precisar ligar modo nenhum:
+
+| | **Clique** | **Arrastar** |
+|---|---|---|
+| **Em cima do texto** | edita o trecho | move o trecho |
+| **Em área em branco** | adiciona texto ali | seleciona vários trechos |
+
 
 - **Clique em um trecho de texto** para abrir a caixa de edição — troque o texto, ou apague tudo para
   remover o trecho. A barra tem negrito, itálico, tamanho, cor e a lista de fontes.
@@ -38,8 +47,10 @@ Com um PDF aberto, clique em **Editar PDF**. A página aparece como imagem:
   quando chega na margem.
 - **Alinhar**: manter onde está, à esquerda, centralizado, à direita ou justificado. E **entrelinha**
   simples, 1,5 ou dupla.
-- **Mover**: arraste o trecho na página, ou use as setas da caixa para ajuste fino.
-- **Adicionar texto** insere texto novo em um espaço em branco da página.
+- **Mover**: arraste o trecho, ou use as setas da caixa para ajuste fino — a posição nova aparece
+  desenhada na página antes de você confirmar.
+- **Vários trechos de uma vez**: arraste um retângulo por cima das linhas. Cada uma mantém a própria
+  formatação; só o que você alterar na caixa vale para todas.
 - **Ctrl+Z** ou **Desfazer** volta a última alteração.
 - **Salvar cópia** grava `nome_editado.pdf` ao lado do original.
 
@@ -60,9 +71,10 @@ aviso simplesmente não aparece.
 
 - A edição funciona em **PDF nativo** (texto digital selecionável). PDF escaneado é imagem — dá para
   ler com OCR, mas não para editar o texto.
-- O texto quebra sozinho na margem, mas as linhas extras **descem sobre o que está abaixo** — o app
-  avisa quando o trecho passa a ocupar mais de uma linha. O conteúdo existente não é empurrado para
-  baixo: PDF não tem parágrafo fluido como o Word.
+- O texto quebra sozinho na margem. Se um trecho passar a ocupar mais linhas, os trechos
+  **selecionados junto com ele** descem para abrir espaço — mas o conteúdo **fora da seleção** não
+  desce, e pode acabar coberto. O app avisa quando isso pode acontecer; a saída é incluir também as
+  linhas de baixo na seleção. PDF não tem parágrafo fluido como o Word.
 - Texto novo entra apenas em área livre da página — não empurra o conteúdo existente.
 - Se a fonte original do PDF não puder ser reutilizada, o app usa a mais parecida instalada no sistema
   e avisa *"fonte aproximada"*.
