@@ -22,6 +22,7 @@ class TextSpan:
     bold: bool
     italic: bool
     serifed: bool
+    pagina: int = 0   # a que pagina do documento este trecho pertence
 
 
 # Alinhamentos aceitos em FormatOverride.alinhamento. None = mantém onde está.
@@ -78,6 +79,7 @@ def spans_for_page(page: fitz.Page) -> List[TextSpan]:
                     bold=bool(flags & (1 << 4)),
                     italic=bool(flags & (1 << 1)),
                     serifed=bool(flags & (1 << 2)),
+                    pagina=page.number or 0,
                 ))
     return spans
 

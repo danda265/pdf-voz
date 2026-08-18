@@ -165,9 +165,39 @@ def _pdf_duas_paginas(tmp_path):
     return caminho
 
 
-def test_virar_pagina_com_a_caixa_aberta_nao_edita_a_pagina_errada(qtbot, tmp_path, monkeypatch):
-    """Verificado em uso: a edição ia parar na página exibida, apagando conteúdo real dela
-    com um bbox que pertencia a outra página."""
+def test_edicao_vai_para_a_pagina_do_trecho_mesmo_apos_rolar(qtbot, tmp_path, monkeypatch):
+    """O documento rola contínuo, então não existe "página atual" para errar: cada trecho
+    carrega a própria página. Antes, rolar até outra página fazia a edição cair nela,
+    apagando conteúdo alheio."""
+    import gui as gui_mod
+    from pdf_editor import FormatOverride, spans_for_page
+
+    monkeypatch.setattr(gui_mod.QMessageBox, 'critical',
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError(f'erro: {a}')))
+    monkeypatch.setattr(gui_mod.QMessageBox, 'question',
+                        lambda *a, **k: gui_mod.QMessageBox.StandardButton.Discard)
+
+    window = gui_mod.MainWindow()
+    qtbot.addWidget(window)
+    window.current_file = str(_pdf_duas_paginas(tmp_path))
+    window.edit_mode_button.setEnabled(True)
+    window.edit_mode_button.setChecked(True)
+
+    alvo = next(s for s in spans_for_page(window.edit_session.doc[0]) if 'UM ALVO' in s.text)
+    assert alvo.pagina == 0
+    window._on_span_clicked(alvo)
+    pagina_dois_antes = window.edit_session.doc[1].get_text()
+
+    window._go_edit_page(1)   # rola até a página 2 com a caixa aberta
+    window._on_popup_confirmed([alvo], ['TROCADO'], FormatOverride(), (0.0, 0.0))
+
+    assert window.edit_session.doc[1].get_text() == pagina_dois_antes, 'mexeu na página errada'
+    assert 'TROCADO' in window.edit_session.doc[0].get_text(), 'não editou a página do trecho'
+    window.edit_mode_button.setChecked(False)
+    window.close()
+
+
+def test_selecao_que_mistura_paginas_e_recusada(qtbot, tmp_path, monkeypatch):
     import gui as gui_mod
     from pdf_editor import FormatOverride, spans_for_page
 
@@ -182,16 +212,14 @@ def test_virar_pagina_com_a_caixa_aberta_nao_edita_a_pagina_errada(qtbot, tmp_pa
     window.edit_mode_button.setEnabled(True)
     window.edit_mode_button.setChecked(True)
 
-    alvo = next(s for s in spans_for_page(window.edit_session.doc[0]) if 'UM ALVO' in s.text)
-    window._on_span_clicked(alvo)
-    pagina_dois_antes = window.edit_session.doc[1].get_text()
+    de_p1 = spans_for_page(window.edit_session.doc[0])[0]
+    de_p2 = spans_for_page(window.edit_session.doc[1])[0]
+    antes = [window.edit_session.doc[i].get_text() for i in (0, 1)]
 
-    window._go_edit_page(1)   # vira a página com a caixa aberta
-    window._on_popup_confirmed([alvo], ['TROCADO'], FormatOverride(), (0.0, 0.0))
+    window._on_popup_confirmed([de_p1, de_p2], ['A', 'B'], FormatOverride(), (0.0, 0.0))
 
-    assert window.edit_session.doc[1].get_text() == pagina_dois_antes, 'mexeu na página errada'
-    assert 'PAGINA UM ALVO' in window.edit_session.doc[0].get_text(), 'editou fora de hora'
-    assert erros, 'deveria ter avisado que a página mudou'
+    assert erros, 'aceitou uma seleção que mistura páginas'
+    assert [window.edit_session.doc[i].get_text() for i in (0, 1)] == antes
     window.edit_mode_button.setChecked(False)
     window.close()
 

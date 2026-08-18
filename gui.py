@@ -472,6 +472,10 @@ class MainWindow(QMainWindow):
         vbox.addWidget(toolbar)
 
         self.edit_scroll = PageScrollArea()
+        # rolar o documento atualiza o rótulo — o contador segue o olho, não o botão
+        self.edit_scroll.verticalScrollBar().valueChanged.connect(
+            lambda _=0: self._atualizar_rotulo_pagina()
+        )
         self.edit_scroll.canvas.span_clicked.connect(self._on_span_clicked)
         self.edit_scroll.canvas.free_area_clicked.connect(self._on_free_area_clicked)
         self.edit_scroll.canvas.span_moved.connect(self._on_span_moved)
@@ -527,7 +531,7 @@ class MainWindow(QMainWindow):
         self.edit_session = EditSession(doc)
         self.edit_page_index = 0
         self.stack.setCurrentIndex(1)
-        self._render_edit_page()
+        self._montar_documento_edicao()
 
     def _exit_edit_mode(self) -> None:
         self.stack.setCurrentIndex(0)
@@ -543,31 +547,38 @@ class MainWindow(QMainWindow):
     def _render_edit_page(self) -> None:
         if not self.edit_session:
             return
-        page = self.edit_session.doc[self.edit_page_index]
-        spans = spans_for_page(page)
-        self.edit_scroll.canvas.show_page(page, spans)
+        self.edit_scroll.canvas.recarregar_spans()
+        self._atualizar_rotulo_pagina()
+
+    def _montar_documento_edicao(self) -> None:
+        self.edit_scroll.canvas.mostrar_documento(self.edit_session.doc)
+        self._atualizar_rotulo_pagina()
+
+    def _atualizar_rotulo_pagina(self) -> None:
+        if not self.edit_session:
+            return
+        topo = self.edit_scroll.verticalScrollBar().value()
+        self.edit_page_index = self.edit_scroll.canvas.pagina_no_topo(topo)
         self.edit_page_label.setText(
             f'Página {self.edit_page_index + 1} de {self.edit_session.doc.page_count}'
         )
 
     def _go_edit_page(self, delta: int) -> None:
+        """Os botões apenas ROLAM até a página; o documento é contínuo, então rolar com o
+        mouse chega ao mesmo lugar."""
         if not self.edit_session:
             return
-        new_index = self.edit_page_index + delta
-        if 0 <= new_index < self.edit_session.doc.page_count:
-            # Fecha a caixa: os trechos que ela guarda sao da pagina que esta saindo, e
-            # confirmar depois da troca aplicaria a edicao na pagina errada, apagando
-            # conteudo dela.
-            self.edit_popup.hide()
-            self.edit_page_index = new_index
-            self._render_edit_page()
+        destino = self.edit_page_index + delta
+        if 0 <= destino < self.edit_session.doc.page_count:
+            self.edit_scroll.verticalScrollBar().setValue(
+                self.edit_scroll.canvas.topo_da_pagina(destino)
+            )
 
     def _on_spans_selected(self, spans: list) -> None:
         """Seleção por retângulo: abre a caixa com todos os trechos de uma vez."""
         primeiro = spans[0]
         local = QPoint(int(primeiro.origin[0] * self.edit_scroll.canvas.zoom),
                        int(primeiro.origin[1] * self.edit_scroll.canvas.zoom))
-        self._pagina_da_caixa = self.edit_page_index
         self.edit_popup.open_for_spans(spans, self.edit_scroll.canvas.mapToGlobal(local))
         self.status_label.setText(
             f'{len(spans)} trecho(s) selecionado(s) — edite, alinhe ou mova tudo de uma vez.'
@@ -577,13 +588,13 @@ class MainWindow(QMainWindow):
         self.edit_scroll.canvas.destacar([span])
         x, y = span.origin
         local = QPoint(int(x * self.edit_scroll.canvas.zoom), int(y * self.edit_scroll.canvas.zoom))
-        self._pagina_da_caixa = self.edit_page_index
         self.edit_popup.open_for_span(span, self.edit_scroll.canvas.mapToGlobal(local))
 
-    def _on_free_area_clicked(self, x: float, y: float) -> None:
+    def _on_free_area_clicked(self, pagina: int, x: float, y: float) -> None:
         self._pending_new_point = (x, y)
-        local = QPoint(int(x * self.edit_scroll.canvas.zoom), int(y * self.edit_scroll.canvas.zoom))
-        self._pagina_da_caixa = self.edit_page_index
+        self._pagina_da_caixa = pagina
+        px, py = self.edit_scroll.canvas.ponto_na_tela(pagina, x, y)
+        local = QPoint(int(px), int(py))
         self.edit_popup.open_for_new_text(self.edit_scroll.canvas.mapToGlobal(local))
 
     def _on_span_moved(self, span: TextSpan, dx: float, dy: float) -> None:
@@ -594,7 +605,6 @@ class MainWindow(QMainWindow):
         x, y = span.origin
         local = QPoint(int((x + dx) * self.edit_scroll.canvas.zoom),
                        int((y + dy) * self.edit_scroll.canvas.zoom))
-        self._pagina_da_caixa = self.edit_page_index
         self.edit_popup.open_for_span(span, self.edit_scroll.canvas.mapToGlobal(local), (dx, dy))
         self.status_label.setText(
             f'Trecho movido {dx:+.0f}, {dy:+.0f} pt — confirme em OK ou ajuste nas setas.'
@@ -604,11 +614,13 @@ class MainWindow(QMainWindow):
                             deslocamento=(0.0, 0.0)) -> None:
         if not self.edit_session:
             return
-        if spans and self._pagina_da_caixa != self.edit_page_index:
-            self._show_error('A página mudou desde que esta edição foi aberta. '
-                             'A edição foi cancelada para não alterar a página errada.')
+        # A pagina vem do proprio trecho: nao existe "pagina atual" para errar.
+        pagina = spans[0].pagina if spans else self._pagina_da_caixa
+        if spans and len({s.pagina for s in spans}) > 1:
+            self._show_error('A seleção mistura páginas diferentes. '
+                             'Selecione trechos de uma página por vez.')
             return
-        page = self.edit_session.doc[self.edit_page_index]
+        page = self.edit_session.doc[pagina]
         self.edit_session.snapshot()
         try:
             if spans:

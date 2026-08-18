@@ -11,7 +11,7 @@ from PyQt6.QtWidgets import (
     QScrollArea, QSpinBox, QToolButton, QVBoxLayout, QWidget,
 )
 
-from pdf_editor import FormatOverride, TextSpan, familia_legivel
+from pdf_editor import FormatOverride, TextSpan, familia_legivel, spans_for_page
 
 DEFAULT_ZOOM = 1.5
 
@@ -43,40 +43,108 @@ def spans_na_area(spans: List[TextSpan], area: Tuple[float, float, float, float]
     return sorted(dentro, key=lambda s: (round(s.bbox[1], 1), s.bbox[0]))
 
 
+ESPACO_ENTRE_PAGINAS = 12   # px de respiro entre uma pagina e a seguinte
+
+
 class PageCanvas(QLabel):
-    span_clicked = pyqtSignal(object)             # TextSpan
-    free_area_clicked = pyqtSignal(float, float)   # ponto em coordenadas do documento (pontos PDF)
-    span_moved = pyqtSignal(object, float, float)  # TextSpan, dx, dy (em pontos do PDF)
-    spans_selected = pyqtSignal(list)              # varios TextSpan de uma vez
+    """Documento inteiro empilhado verticalmente, com rolagem continua.
+
+    Cada trecho carrega o numero da pagina a que pertence (`TextSpan.pagina`), entao nao
+    existe "pagina atual" ambigua: a edicao sempre sabe onde se aplica."""
+
+    span_clicked = pyqtSignal(object)
+    free_area_clicked = pyqtSignal(int, float, float)   # pagina, x, y (pontos do PDF)
+    span_moved = pyqtSignal(object, float, float)
+    spans_selected = pyqtSignal(list)
 
     def __init__(self, parent: Optional[QWidget] = None):
         super().__init__(parent)
         self.zoom = DEFAULT_ZOOM
+        self.doc = None
         self.spans: List[TextSpan] = []
         self.selecionados: List[TextSpan] = []
+        self._tops: List[float] = []       # y (px) onde cada pagina comeca
+        self._tamanhos: List[tuple] = []   # (largura, altura) em px de cada pagina
+        self._cache = {}                   # pagina -> QPixmap ja renderizado
         self._span_pressionado: Optional[TextSpan] = None
         self._pos_inicial = None
         self._pos_atual = None
         self._arrastando = False
-        self._marcando = False   # desenhando o retangulo de selecao
-        self._previa = ([], 0.0, 0.0)   # (spans, dx, dy) — para onde o texto vai
+        self._marcando = False
+        self._previa = ([], 0.0, 0.0)
 
-    def show_page(self, page: fitz.Page, spans: List[TextSpan]) -> None:
-        self.spans = spans
+    # ── Montagem ──────────────────────────────────────────────────────────────
+
+    def mostrar_documento(self, doc) -> None:
+        """Recalcula o empilhamento e recarrega os trechos de todas as paginas."""
+        self.doc = doc
+        self._cache.clear()
+        self._tops, self._tamanhos = [], []
+        y = 0.0
+        for i in range(doc.page_count):
+            pagina = doc[i]
+            largura = pagina.rect.width * self.zoom
+            altura = pagina.rect.height * self.zoom
+            self._tops.append(y)
+            self._tamanhos.append((largura, altura))
+            y += altura + ESPACO_ENTRE_PAGINAS
+        largura_total = max((w for w, _ in self._tamanhos), default=1.0)
+        self.setFixedSize(int(largura_total), int(max(y - ESPACO_ENTRE_PAGINAS, 1)))
+        self.recarregar_spans()
+
+    def recarregar_spans(self) -> None:
+        """Apos uma edicao: descarta o desenho em cache e rele os trechos."""
+        if self.doc is None:
+            return
+        self._cache.clear()
+        self.spans = []
+        for i in range(self.doc.page_count):
+            self.spans.extend(spans_for_page(self.doc[i]))
         self.selecionados = []
-        self._previa = ([], 0.0, 0.0)   # nenhum fantasma sobrevive a um redesenho
-        pix = page.get_pixmap(matrix=fitz.Matrix(self.zoom, self.zoom))
-        image = QImage(pix.samples, pix.width, pix.height, pix.stride, QImage.Format.Format_RGB888)
-        self.setPixmap(QPixmap.fromImage(image.copy()))
-        self.setFixedSize(pix.width, pix.height)
+        self._previa = ([], 0.0, 0.0)
         self._cancelar_arrasto()
+
+    def _pixmap_da_pagina(self, indice: int) -> QPixmap:
+        if indice not in self._cache:
+            pix = self.doc[indice].get_pixmap(matrix=fitz.Matrix(self.zoom, self.zoom))
+            imagem = QImage(pix.samples, pix.width, pix.height, pix.stride,
+                            QImage.Format.Format_RGB888)
+            self._cache[indice] = QPixmap.fromImage(imagem.copy())
+        return self._cache[indice]
+
+    # ── Coordenadas ───────────────────────────────────────────────────────────
+
+    def posicao_no_documento(self, x: float, y: float):
+        """(pagina, x, y em pontos do PDF) a partir de um ponto do widget."""
+        for i, topo in enumerate(self._tops):
+            altura = self._tamanhos[i][1]
+            if y < topo + altura or i == len(self._tops) - 1:
+                return i, x / self.zoom, (y - topo) / self.zoom
+        return 0, x / self.zoom, y / self.zoom
+
+    def ponto_na_tela(self, pagina: int, x: float, y: float):
+        """Inverso de posicao_no_documento: ponto do PDF para ponto do widget."""
+        topo = self._tops[pagina] if pagina < len(self._tops) else 0.0
+        return x * self.zoom, topo + y * self.zoom
+
+    def pagina_no_topo(self, y_visivel: float) -> int:
+        return self.posicao_no_documento(0.0, y_visivel)[0]
+
+    def topo_da_pagina(self, pagina: int) -> int:
+        if 0 <= pagina < len(self._tops):
+            return int(self._tops[pagina])
+        return 0
+
+    def _spans_da_pagina(self, pagina: int) -> List[TextSpan]:
+        return [s for s in self.spans if s.pagina == pagina]
+
+    # ── Interacao ─────────────────────────────────────────────────────────────
 
     def destacar(self, spans: List[TextSpan]) -> None:
         self.selecionados = list(spans)
         self.update()
 
     def previsualizar(self, spans: List[TextSpan], dx: float, dy: float) -> None:
-        """Mostra na página para onde o texto vai antes de confirmar."""
         self._previa = (list(spans), dx, dy)
         self.update()
 
@@ -90,14 +158,10 @@ class PageCanvas(QLabel):
         self.update()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        if event.button() != Qt.MouseButton.LeftButton:
+        if event.button() != Qt.MouseButton.LeftButton or self.doc is None:
             return
-        doc_x = event.position().x() / self.zoom
-        doc_y = event.position().y() / self.zoom
-        # Quatro gestos, decididos no release porque so ali se sabe se houve arrasto:
-        #   em cima de texto  — clique edita, arrasto move
-        #   em area vazia     — clique adiciona texto ali, arrasto seleciona varios
-        self._span_pressionado = span_at_point(self.spans, (doc_x, doc_y))
+        pagina, dx, dy = self.posicao_no_documento(event.position().x(), event.position().y())
+        self._span_pressionado = span_at_point(self._spans_da_pagina(pagina), (dx, dy))
         self._marcando = self._span_pressionado is None
         self._pos_inicial = event.position()
         self._pos_atual = event.position()
@@ -113,7 +177,7 @@ class PageCanvas(QLabel):
             if not self._marcando:
                 self.setCursor(Qt.CursorShape.ClosedHandCursor)
         if self._marcando and self._arrastando:
-            self.update()   # redesenha o retangulo em tempo real
+            self.update()
 
     def mouseReleaseEvent(self, event: QMouseEvent) -> None:
         if event.button() != Qt.MouseButton.LeftButton or self._pos_inicial is None:
@@ -124,13 +188,16 @@ class PageCanvas(QLabel):
         self._cancelar_arrasto()
 
         if marcando:
+            pagina, fx, fy = self.posicao_no_documento(fim.x(), fim.y())
             if not arrastando:
-                # clique seco no vazio: adiciona texto ali mesmo, sem precisar ligar modo
-                self.free_area_clicked.emit(fim.x() / self.zoom, fim.y() / self.zoom)
+                self.free_area_clicked.emit(pagina, fx, fy)
                 return
-            area = (inicial.x() / self.zoom, inicial.y() / self.zoom,
-                    fim.x() / self.zoom, fim.y() / self.zoom)
-            escolhidos = spans_na_area(self.spans, area)
+            pagina_ini, ix, iy = self.posicao_no_documento(inicial.x(), inicial.y())
+            # A selecao vale dentro de UMA pagina: um retangulo que atravessa a divisa
+            # misturaria trechos de paginas diferentes numa edicao so.
+            escolhidos = []
+            if pagina_ini == pagina:
+                escolhidos = spans_na_area(self._spans_da_pagina(pagina), (ix, iy, fx, fy))
             if escolhidos:
                 self.destacar(escolhidos)
                 self.spans_selected.emit(escolhidos)
@@ -144,23 +211,31 @@ class PageCanvas(QLabel):
         delta = fim - inicial
         self.span_moved.emit(span, delta.x() / self.zoom, delta.y() / self.zoom)
 
+    # ── Desenho ───────────────────────────────────────────────────────────────
+
     def paintEvent(self, event) -> None:
-        super().paintEvent(event)
-        previa_spans, pdx, pdy = self._previa
-        tem_previa = previa_spans and (abs(pdx) > 0.01 or abs(pdy) > 0.01)
-        if not self.selecionados and not tem_previa and not (self._marcando and self._arrastando):
+        if self.doc is None:
+            super().paintEvent(event)
             return
         pintor = QPainter(self)
+        visivel = event.rect()
+        for i, topo in enumerate(self._tops):
+            altura = self._tamanhos[i][1]
+            if topo + altura < visivel.top() or topo > visivel.bottom():
+                continue   # so desenha o que esta a vista
+            pintor.drawPixmap(0, int(topo), self._pixmap_da_pagina(i))
+
         for span in self.selecionados:
-            x0, y0, x1, y1 = (v * self.zoom for v in span.bbox)
+            x0, y0 = self.ponto_na_tela(span.pagina, span.bbox[0], span.bbox[1])
+            x1, y1 = self.ponto_na_tela(span.pagina, span.bbox[2], span.bbox[3])
             pintor.fillRect(QRectF(x0, y0, x1 - x0, y1 - y0), QColor(59, 130, 246, 60))
 
-        if tem_previa:
-            # Fantasma na posição de destino: o retângulo de origem riscado e o texto
-            # desenhado onde vai parar.
+        previa_spans, pdx, pdy = self._previa
+        if previa_spans and (abs(pdx) > 0.01 or abs(pdy) > 0.01):
             pintor.setPen(QPen(QColor(148, 163, 184), 1, Qt.PenStyle.DotLine))
             for span in previa_spans:
-                x0, y0, x1, y1 = (v * self.zoom for v in span.bbox)
+                x0, y0 = self.ponto_na_tela(span.pagina, span.bbox[0], span.bbox[1])
+                x1, y1 = self.ponto_na_tela(span.pagina, span.bbox[2], span.bbox[3])
                 pintor.drawRect(QRectF(x0, y0, x1 - x0, y1 - y0))
             pintor.setPen(QPen(QColor(217, 119, 6)))
             for span in previa_spans:
@@ -169,11 +244,9 @@ class PageCanvas(QLabel):
                 fonte.setBold(span.bold)
                 fonte.setItalic(span.italic)
                 pintor.setFont(fonte)
-                pintor.drawText(
-                    QPointF((span.origin[0] + pdx) * self.zoom,
-                            (span.origin[1] + pdy) * self.zoom),
-                    span.text,
-                )
+                x, y = self.ponto_na_tela(span.pagina, span.origin[0] + pdx,
+                                          span.origin[1] + pdy)
+                pintor.drawText(QPointF(x, y), span.text)
 
         if self._marcando and self._arrastando and self._pos_atual is not None:
             pintor.setPen(QPen(QColor(59, 130, 246), 1, Qt.PenStyle.DashLine))

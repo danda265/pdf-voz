@@ -152,11 +152,8 @@ def test_arrasto_no_canvas_emite_span_moved_em_pontos_do_pdf(qtbot):
     from PyQt6.QtGui import QMouseEvent
     from pdf_editor_view import PageCanvas
 
-    canvas = PageCanvas()
-    qtbot.addWidget(canvas)
     span = _make_span()
-    canvas.spans = [span]
-    canvas.zoom = 2.0
+    canvas = _canvas_pronto(qtbot, [span], zoom=2.0)
 
     def evento(tipo, x, y):
         return QMouseEvent(tipo, QPointF(x, y), Qt.MouseButton.LeftButton,
@@ -180,10 +177,7 @@ def test_clique_curto_nao_vira_arrasto(qtbot):
     from PyQt6.QtGui import QMouseEvent
     from pdf_editor_view import PageCanvas
 
-    canvas = PageCanvas()
-    qtbot.addWidget(canvas)
-    canvas.spans = [_make_span()]
-    canvas.zoom = 2.0
+    canvas = _canvas_pronto(qtbot, [_make_span()], zoom=2.0)
 
     def evento(tipo, x, y):
         return QMouseEvent(tipo, QPointF(x, y), Qt.MouseButton.LeftButton,
@@ -211,6 +205,24 @@ def _span_em(y, texto='linha', x0=72.0, x1=200.0):
                     bold=False, italic=False, serifed=False)
 
 
+def _canvas_pronto(qtbot, spans, zoom=1.0, paginas=1):
+    """Canvas montado como em uso (com documento de verdade), mas com trechos sintéticos
+    de posição conhecida — o hit-test precisa do documento para saber onde cada página cai."""
+    import fitz
+    from pdf_editor_view import PageCanvas
+
+    doc = fitz.open()
+    for _ in range(paginas):
+        doc.new_page(width=595, height=842)
+    canvas = PageCanvas()
+    qtbot.addWidget(canvas)
+    canvas.zoom = zoom
+    canvas.mostrar_documento(doc)
+    canvas.spans = spans          # substitui os do documento vazio
+    canvas._doc_de_teste = doc    # mantém vivo enquanto o canvas existir
+    return canvas
+
+
 def test_spans_na_area_pega_quem_encosta_e_ordena_de_cima_para_baixo():
     from pdf_editor_view import spans_na_area
     a, b, c = _span_em(100, 'a'), _span_em(140, 'b'), _span_em(300, 'c')
@@ -233,10 +245,7 @@ def test_selecao_por_retangulo_emite_spans_selected(qtbot):
     from PyQt6.QtGui import QMouseEvent
     from pdf_editor_view import PageCanvas
 
-    canvas = PageCanvas()
-    qtbot.addWidget(canvas)
-    canvas.zoom = 1.0
-    canvas.spans = [_span_em(100, 'a'), _span_em(140, 'b'), _span_em(400, 'longe')]
+    canvas = _canvas_pronto(qtbot, [_span_em(100, 'a'), _span_em(140, 'b'), _span_em(400, 'longe')])
 
     def ev(tipo, x, y):
         return QMouseEvent(tipo, QPointF(x, y), Qt.MouseButton.LeftButton,
@@ -288,10 +297,7 @@ def test_clique_no_vazio_adiciona_texto_ali(qtbot):
     from PyQt6.QtGui import QMouseEvent
     from pdf_editor_view import PageCanvas
 
-    canvas = PageCanvas()
-    qtbot.addWidget(canvas)
-    canvas.zoom = 2.0
-    canvas.spans = [_span_em(100, 'existente')]
+    canvas = _canvas_pronto(qtbot, [_span_em(100, 'existente')], zoom=2.0)
 
     def ev(tipo, x, y):
         return QMouseEvent(tipo, QPointF(x, y), Qt.MouseButton.LeftButton,
@@ -302,8 +308,9 @@ def test_clique_no_vazio_adiciona_texto_ali(qtbot):
     with qtbot.waitSignal(canvas.free_area_clicked, timeout=1000) as blocker:
         canvas.mouseReleaseEvent(ev(QMouseEvent.Type.MouseButtonRelease, 600.0, 1200.0))
 
-    assert abs(blocker.args[0] - 300.0) < 0.01   # 600 px / zoom 2.0
-    assert abs(blocker.args[1] - 600.0) < 0.01
+    assert blocker.args[0] == 0                  # página 0
+    assert abs(blocker.args[1] - 300.0) < 0.01   # 600 px / zoom 2.0
+    assert abs(blocker.args[2] - 600.0) < 0.01
 
 
 def test_arrasto_no_vazio_seleciona_em_vez_de_adicionar(qtbot):
@@ -312,12 +319,9 @@ def test_arrasto_no_vazio_seleciona_em_vez_de_adicionar(qtbot):
     from PyQt6.QtGui import QMouseEvent
     from pdf_editor_view import PageCanvas
 
-    canvas = PageCanvas()
-    qtbot.addWidget(canvas)
-    canvas.zoom = 1.0
-    canvas.spans = [_span_em(100, 'a'), _span_em(140, 'b')]
+    canvas = _canvas_pronto(qtbot, [_span_em(100, 'a'), _span_em(140, 'b')])
     adicionou = []
-    canvas.free_area_clicked.connect(lambda x, y: adicionou.append((x, y)))
+    canvas.free_area_clicked.connect(lambda pg, x, y: adicionou.append((pg, x, y)))
 
     def ev(tipo, x, y):
         return QMouseEvent(tipo, QPointF(x, y), Qt.MouseButton.LeftButton,
@@ -364,13 +368,100 @@ def test_redesenhar_a_pagina_nao_carrega_fantasma_antigo(qtbot, sample_pdf):
     from pdf_editor import spans_for_page
     from pdf_editor_view import PageCanvas
 
+    from pdf_editor_view import PageCanvas
     canvas = PageCanvas()
     qtbot.addWidget(canvas)
     doc = fitz.open(str(sample_pdf))
-    spans = spans_for_page(doc[0])
-    canvas.previsualizar(spans, 30.0, 10.0)
+    canvas.mostrar_documento(doc)
+    canvas.previsualizar(spans_for_page(doc[0]), 30.0, 10.0)
     assert canvas._previa[0]
 
-    canvas.show_page(doc[0], spans)
-    doc.close()
+    canvas.recarregar_spans()
     assert canvas._previa == ([], 0.0, 0.0)
+    doc.close()
+
+
+def test_documento_continuo_empilha_todas_as_paginas(qtbot):
+    """Rolar tem de percorrer o documento inteiro, não uma página por vez."""
+    import fitz
+    from pdf_editor_view import PageCanvas
+
+    doc = fitz.open()
+    for n in (1, 2, 3):
+        pg = doc.new_page(width=595, height=842)
+        pg.insert_text((72, 100), f'TOPO {n}', fontsize=14, fontname='helv')
+
+    canvas = PageCanvas()
+    qtbot.addWidget(canvas)
+    canvas.zoom = 1.5
+    canvas.mostrar_documento(doc)
+
+    assert len(canvas._tops) == 3
+    assert canvas.height() > 842 * 1.5 * 2, 'não empilhou as páginas'
+    assert sorted({s.pagina for s in canvas.spans}) == [0, 1, 2]
+    doc.close()
+
+
+def test_rolagem_mapeia_para_a_pagina_certa(qtbot):
+    import fitz
+    from pdf_editor_view import PageCanvas
+
+    doc = fitz.open()
+    for _ in range(3):
+        doc.new_page(width=595, height=842)
+    canvas = PageCanvas()
+    qtbot.addWidget(canvas)
+    canvas.zoom = 1.5
+    canvas.mostrar_documento(doc)
+    altura = 842 * 1.5
+
+    assert canvas.pagina_no_topo(0) == 0
+    assert canvas.pagina_no_topo(altura - 10) == 0
+    assert canvas.pagina_no_topo(altura + 20) == 1
+    assert canvas.pagina_no_topo(altura * 2 + 50) == 2
+    doc.close()
+
+
+def test_coordenadas_vao_e_voltam_sem_perder_a_pagina(qtbot):
+    """O clique precisa virar (página, x, y) do PDF e voltar ao mesmo pixel."""
+    import fitz
+    from pdf_editor_view import PageCanvas
+
+    doc = fitz.open()
+    for _ in range(3):
+        doc.new_page(width=595, height=842)
+    canvas = PageCanvas()
+    qtbot.addWidget(canvas)
+    canvas.zoom = 1.5
+    canvas.mostrar_documento(doc)
+
+    px, py = canvas.ponto_na_tela(1, 72.0, 100.0)
+    pagina, x, y = canvas.posicao_no_documento(px, py)
+    doc.close()
+    assert pagina == 1
+    assert abs(x - 72.0) < 0.01 and abs(y - 100.0) < 0.01
+
+
+def test_clique_na_pagina_de_baixo_acha_o_trecho_daquela_pagina(qtbot):
+    """Com tudo empilhado, o hit-test precisa olhar só os trechos da página clicada."""
+    import fitz
+    from pdf_editor_view import PageCanvas, span_at_point
+
+    doc = fitz.open()
+    for n in (1, 2, 3):
+        pg = doc.new_page(width=595, height=842)
+        pg.insert_text((72, 100), f'TOPO {n}', fontsize=14, fontname='helv')
+    canvas = PageCanvas()
+    qtbot.addWidget(canvas)
+    canvas.zoom = 1.5
+    canvas.mostrar_documento(doc)
+
+    alvo = next(s for s in canvas.spans if s.text.strip() == 'TOPO 3')
+    mx, my = canvas.ponto_na_tela(alvo.pagina,
+                                  (alvo.bbox[0] + alvo.bbox[2]) / 2,
+                                  (alvo.bbox[1] + alvo.bbox[3]) / 2)
+    pagina, dx, dy = canvas.posicao_no_documento(mx, my)
+    achado = span_at_point([s for s in canvas.spans if s.pagina == pagina], (dx, dy))
+    doc.close()
+    assert pagina == 2
+    assert achado is not None and achado.text.strip() == 'TOPO 3'
