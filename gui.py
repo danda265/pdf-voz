@@ -29,8 +29,9 @@ from pdf_editor import (
     insert_free_text, open_for_edit, replace_spans_text, save_copy, spans_for_page,
 )
 from pdf_editor_view import PageScrollArea, SpanEditPopup
+from atualizacao import procurar_novidade
 
-APP_VERSION = '1.2.0'   # fonte única da versão — o instalador (.iss) deve usar o mesmo valor
+APP_VERSION = '1.3.0'   # fonte única da versão — o instalador (.iss) deve usar o mesmo valor
 
 _FONT_MIN, _FONT_MAX, _FONT_DEFAULT = 12, 28, 15
 
@@ -190,6 +191,20 @@ class ExportThread(QThread):
             self.error.emit(sanitize_error_message(str(exc)))
 
 
+class VerificaAtualizacao(QThread):
+    """Consulta o GitHub em segundo plano. Silenciosa quando nao ha novidade ou rede."""
+    encontrou = pyqtSignal(str, str)   # versao, link
+
+    def __init__(self, versao_instalada: str):
+        super().__init__()
+        self.versao_instalada = versao_instalada
+
+    def run(self) -> None:
+        achado = procurar_novidade(self.versao_instalada)
+        if achado:
+            self.encontrou.emit(achado[0], achado[1])
+
+
 # ── Main Window ───────────────────────────────────────────────────────────────
 
 
@@ -226,6 +241,21 @@ class MainWindow(QMainWindow):
         self.theme_button.setText('☀️' if self._dark else '🌙')
         self._setup_shortcuts()
         self._set_reading_buttons(False)
+        self._verificar_atualizacao()
+
+    def _verificar_atualizacao(self) -> None:
+        """Avisa se há versão mais nova. Falha de rede não gera ruído nenhum."""
+        self.update_thread = VerificaAtualizacao(APP_VERSION)
+        self.update_thread.encontrou.connect(self._mostrar_atualizacao)
+        self.update_thread.finished.connect(self.update_thread.deleteLater)
+        self.update_thread.start()
+
+    def _mostrar_atualizacao(self, versao: str, link: str) -> None:
+        self.update_label.setText(
+            f'Versão {versao} disponível (você tem a {APP_VERSION}) — '
+            f'<a href="{link}">baixar</a>'
+        )
+        self.update_label.setVisible(True)
 
     # ── Build UI ──────────────────────────────────────────────────────────────
 
@@ -439,9 +469,16 @@ class MainWindow(QMainWindow):
         self.status_label = QLabel('Pronto. Abra um arquivo PDF ou Word para começar.')
         self.status_label.setObjectName('StatusLabel')
 
+        # Só aparece quando há versão nova publicada.
+        self.update_label = QLabel('')
+        self.update_label.setObjectName('UpdateLabel')
+        self.update_label.setOpenExternalLinks(True)
+        self.update_label.setVisible(False)
+
         vbox.addLayout(row1)
         vbox.addLayout(row2)
         vbox.addWidget(self.status_label)
+        vbox.addWidget(self.update_label)
         return footer
 
     def _build_edit_view(self) -> QWidget:
@@ -1157,6 +1194,7 @@ def _build_stylesheet(dark: bool) -> str:
     #ValueLabel   {{ color:#3B82F6; font-weight:700; font-size:13px; min-width:42px; }}
     #PageLabel    {{ color:{text}; font-weight:600; font-size:13px; }}
     #StatusLabel  {{ color:{subtext}; font-size:12px; }}
+    #UpdateLabel  {{ color:#2563EB; font-size:12px; font-weight:600; }}
     QComboBox {{
         background:{surface}; color:{text};
         border:1.5px solid {border}; border-radius:7px;

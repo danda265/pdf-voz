@@ -49,6 +49,13 @@ Com um PDF aberto, clique em **Editar PDF**. A página aparece como imagem:
 Clique com o botão direito em um PDF → **Abrir com** → **Escolher outro aplicativo** → **PDF VOZ** →
 marque *"Sempre usar este aplicativo"*.
 
+## Aviso de versão nova
+
+Ao abrir, o app consulta a página pública de *releases* deste repositório para saber se
+existe versão mais recente. Se existir, aparece um aviso discreto no rodapé com o link.
+Nada é baixado ou instalado automaticamente, nenhum dado seu é enviado, e sem internet o
+aviso simplesmente não aparece.
+
 ## Limitações conhecidas
 
 - A edição funciona em **PDF nativo** (texto digital selecionável). PDF escaneado é imagem — dá para
