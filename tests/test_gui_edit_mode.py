@@ -296,3 +296,35 @@ def test_sair_com_edicoes_nao_salvas_pergunta_antes_de_descartar(qtbot, sample_p
     window.edit_mode_button.setChecked(False)
     assert window.edit_session is None
     window.close()
+
+
+def test_desfazer_fecha_a_caixa_de_edicao(qtbot, sample_pdf, monkeypatch):
+    """Desfazer troca o documento inteiro; os trechos guardados na caixa viram
+    coordenadas obsoletas e confirmar depois apagaria o que estivesse ali."""
+    import gui as gui_mod
+    from pdf_editor import FormatOverride, spans_for_page
+
+    monkeypatch.setattr(gui_mod.QMessageBox, 'question',
+                        lambda *a, **k: gui_mod.QMessageBox.StandardButton.Discard)
+    window = gui_mod.MainWindow()
+    qtbot.addWidget(window)
+    window.current_file = str(sample_pdf)
+    window.edit_mode_button.setEnabled(True)
+    window.edit_mode_button.setChecked(True)
+
+    alvo = next(s for s in spans_for_page(window.edit_session.doc[0])
+                if s.text.strip() == 'Ola mundo')
+    window._on_span_clicked(alvo)
+    window._on_popup_confirmed([alvo], ['PRIMEIRA'], FormatOverride(), (0.0, 0.0))
+
+    novo = next(s for s in spans_for_page(window.edit_session.doc[0])
+                if 'PRIMEIRA' in s.text)
+    window._on_span_clicked(novo)
+    assert window.edit_popup.isVisible() or window.edit_popup._spans == [novo]
+
+    window._edit_undo()
+
+    assert not window.edit_popup.isVisible(), 'a caixa continuou aberta com trechos obsoletos'
+    assert 'Ola mundo' in window.edit_session.doc[0].get_text()
+    window.edit_mode_button.setChecked(False)
+    window.close()

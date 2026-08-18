@@ -342,6 +342,23 @@ def replace_span_text(doc: fitz.Document, page: fitz.Page, span: TextSpan, new_t
     return replace_spans_text(doc, page, [span], [new_text], override, deslocamento)[0]
 
 
+def _cabe_em_rascunho(page: fitz.Page, caixa: fitz.Rect, texto: str, choice: FontChoice,
+                      alinhamento: Optional[str], entrelinha: Optional[float]) -> Tuple[bool, int]:
+    """Ensaia a escrita numa pagina descartavel do mesmo tamanho.
+
+    E o que permite descobrir se o texto cabe — e em quantas linhas — ANTES de apagar o
+    original. Sem esse ensaio, um texto que nao cabe deixava o trecho ja redigido e
+    perdido, porque o erro so aparecia depois da redacao."""
+    rascunho = fitz.open()
+    try:
+        folha = rascunho.new_page(width=page.rect.width, height=page.rect.height)
+        if choice.fontbuffer:
+            folha.insert_font(fontname=choice.fontname, fontbuffer=choice.fontbuffer)
+        return _escrever_na_caixa(folha, caixa, texto, choice, alinhamento, entrelinha)
+    finally:
+        rascunho.close()
+
+
 def replace_spans_text(doc: fitz.Document, page: fitz.Page, spans: List[TextSpan],
                        textos: List[str], override: Optional[FormatOverride] = None,
                        deslocamento: Tuple[float, float] = (0.0, 0.0)) -> List[FontChoice]:
@@ -349,7 +366,10 @@ def replace_spans_text(doc: fitz.Document, page: fitz.Page, spans: List[TextSpan
 
     So o que veio preenchido no `override` (porque o usuario mexeu naquele controle) e
     aplicado a todos; o resto de cada trecho continua como estava. Alinhamento, entrelinha
-    e deslocamento valem para o conjunto."""
+    e deslocamento valem para o conjunto.
+
+    A pagina so e tocada depois que TODOS os trechos passaram no ensaio de encaixe: ou a
+    edicao inteira acontece, ou nada acontece."""
     if len(textos) != len(spans):
         raise PDFEditError(
             f'Inconsistência interna: {len(spans)} trecho(s) para {len(textos)} texto(s). '
@@ -359,39 +379,66 @@ def replace_spans_text(doc: fitz.Document, page: fitz.Page, spans: List[TextSpan
     # A mancha e medida antes de qualquer redacao: apagar os trechos selecionados a
     # encolheria, e alinhar por ela depois jogaria o texto para o lugar errado.
     conteudo = area_de_conteudo(page)
-    # As fontes sao resolvidas ANTES de redigir: resolver le fontes embutidas e pode
-    # falhar. Redigindo primeiro, uma falha aqui deixaria os trechos apagados sem
-    # substituto — texto perdido. Falhando antes, a pagina fica intacta.
+    # As fontes sao resolvidas ANTES de redigir: resolver le fontes embutidas e pode falhar.
     escolhas = [resolve_font(doc, page, span, override, texto) if texto else None
                 for span, texto in zip(spans, textos)]
 
+    # ── Ensaio: quantas linhas cada trecho vai ocupar, e se cabe ─────────────
+    # Ordem do documento: de cima para baixo, e da esquerda para a direita dentro da linha.
+    ordem = sorted(range(len(spans)),
+                   key=lambda i: (round(spans[i].origin[1], 1), spans[i].origin[0]))
+    linhas_de = {}
+    for i in ordem:
+        texto, choice = textos[i], escolhas[i]
+        if not texto:
+            linhas_de[i] = 0
+            continue
+        caixa = _caixa_do_texto(page, spans[i], choice, override.alinhamento, deslocamento,
+                                override.entrelinha, conteudo)
+        coube, linhas = _cabe_em_rascunho(page, caixa, texto, choice,
+                                          override.alinhamento, override.entrelinha)
+        if not coube:
+            raise PDFEditError(
+                'O texto novo não coube na página. Encurte o texto ou reduza o tamanho da '
+                'fonte. Nada foi alterado no documento.'
+            )
+        linhas_de[i] = linhas
+
+    # ── Empurrao: so as linhas SEGUINTES descem ─────────────────────────────
+    # Um trecho que cresce nao pode deslocar o vizinho da MESMA linha — so o que vem abaixo.
+    empurrao_de = {}
+    empurrao = 0.0
+    pendente = 0.0
+    linha_atual = None
+    for i in ordem:
+        y = round(spans[i].origin[1], 1)
+        if linha_atual is None or y != linha_atual:
+            empurrao += pendente
+            pendente = 0.0
+            linha_atual = y
+        empurrao_de[i] = empurrao
+        if linhas_de[i] > 1 and escolhas[i] is not None:
+            altura_linha, _ = _metricas_da_caixa(escolhas[i], override.entrelinha)
+            pendente = max(pendente, (linhas_de[i] - 1) * altura_linha)
+
+    # ── A partir daqui a pagina e alterada ──────────────────────────────────
     for span in spans:
         page.add_redact_annot(fitz.Rect(span.bbox), fill=(1, 1, 1))
     page.apply_redactions()
 
     resultado: List[FontChoice] = []
-    # Quando um trecho passa a ocupar mais linhas, os trechos seguintes da selecao descem
-    # junto. Sem isso a linha que sobra e escrita POR CIMA da proxima, que ficaria parada
-    # no lugar original — o bloco sai embaralhado.
-    empurrao = 0.0
-    for span, texto, choice in zip(spans, textos, escolhas):
+    for i, (span, texto, choice) in enumerate(zip(spans, textos, escolhas)):
         if not texto:
             resultado.append(FontChoice('', None, span.size, span.color, used_fallback=False))
             continue
         if choice.fontbuffer:
             page.insert_font(fontname=choice.fontname, fontbuffer=choice.fontbuffer)
-        desloc = (deslocamento[0], deslocamento[1] + empurrao)
+        desloc = (deslocamento[0], deslocamento[1] + empurrao_de[i])
         caixa = _caixa_do_texto(page, span, choice, override.alinhamento, desloc,
                                 override.entrelinha, conteudo)
-        coube, linhas = _escrever_na_caixa(page, caixa, texto, choice,
-                                           override.alinhamento, override.entrelinha)
-        if not coube:
-            raise PDFEditError(
-                'O texto novo não coube na página. Encurte o texto ou reduza o tamanho da fonte.'
-            )
-        altura_linha, _ = _metricas_da_caixa(choice, override.entrelinha)
-        empurrao += (linhas - 1) * altura_linha
-        choice.overflowed = linhas > 1
+        _escrever_na_caixa(page, caixa, texto, choice, override.alinhamento,
+                           override.entrelinha)
+        choice.overflowed = linhas_de[i] > 1
         resultado.append(choice)
     return resultado
 

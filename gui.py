@@ -658,8 +658,15 @@ class MainWindow(QMainWindow):
             self._edit_undo()
 
     def _edit_undo(self) -> None:
+        # Desfazer troca o documento inteiro: os trechos que a caixa guarda passam a
+        # apontar para coordenadas que nao existem mais, e confirmar depois disso
+        # apagaria o que estivesse naquele lugar.
+        self.edit_popup.hide()
+        self.edit_scroll.canvas.destacar([])
         if self.edit_session and self.edit_session.undo():
-            self._render_edit_page()
+            # undo() FECHA o documento e abre outro: remontar é obrigatório, senão o
+            # canvas segue apontando para um documento morto.
+            self._montar_documento_edicao()
         else:
             self.status_label.setText('Nada para desfazer.')
 

@@ -595,3 +595,60 @@ def test_sem_crescimento_o_bloco_nao_se_move(tmp_path):
     doc.close()
     assert abs(novos['ALFA'].origin[1] - antes[0]) < 0.5
     assert abs(novos['BETA'].origin[1] - antes[1]) < 0.5
+
+
+def test_trecho_da_mesma_linha_nao_desce_quando_o_vizinho_cresce(tmp_path):
+    """Empurrar tem de valer só para as linhas de BAIXO. Verificado em uso: um trecho da
+    mesma linha descia 82 pt sem motivo quando o vizinho quebrava."""
+    from pdf_editor import replace_spans_text
+
+    caminho = tmp_path / 'lado_a_lado.pdf'
+    d = fitz.open()
+    pg = d.new_page(width=595, height=842)
+    pg.insert_text((72, 100), 'ESQUERDA', fontsize=12, fontname='helv')
+    pg.insert_text((300, 100), 'DIREITA', fontsize=12, fontname='helv')
+    pg.insert_text((72, 300), 'ABAIXO', fontsize=12, fontname='helv')
+    d.save(str(caminho)); d.close()
+
+    doc = fitz.open(str(caminho))
+    page = doc[0]
+    spans = spans_for_page(page)
+    esq = next(s for s in spans if 'ESQUERDA' in s.text)
+    dire = next(s for s in spans if 'DIREITA' in s.text)
+    abaixo = next(s for s in spans if 'ABAIXO' in s.text)
+    y_dir, y_ab = dire.origin[1], abaixo.origin[1]
+
+    escolhas = replace_spans_text(doc, page, [esq, dire, abaixo],
+                                  ['palavra ' * 60, 'DIREITA', 'ABAIXO'])
+
+    novos = {s.text.strip(): s for s in spans_for_page(page)}
+    doc.close()
+    assert escolhas[0].overflowed, 'o texto longo deveria ter quebrado em várias linhas'
+    assert abs(novos['DIREITA'].origin[1] - y_dir) < 1, 'vizinho da mesma linha desceu'
+    assert novos['ABAIXO'].origin[1] > y_ab + 1, 'a linha de baixo deveria ter descido'
+
+
+def test_texto_que_nao_cabe_deixa_a_pagina_intacta(tmp_path):
+    """A promessa é 'ou a edição inteira acontece, ou nada acontece'. Antes o trecho já
+    tinha sido apagado quando o erro era levantado."""
+    from pdf_editor import replace_spans_text
+
+    caminho = tmp_path / 'nao_cabe.pdf'
+    d = fitz.open()
+    pg = d.new_page(width=595, height=842)
+    pg.insert_text((72, 100), 'ALVO', fontsize=12, fontname='helv')
+    pg.insert_text((72, 140), 'VIZINHO', fontsize=12, fontname='helv')
+    d.save(str(caminho)); d.close()
+
+    doc = fitz.open(str(caminho))
+    page = doc[0]
+    alvo = next(s for s in spans_for_page(page) if s.text.strip() == 'ALVO')
+
+    with pytest.raises(PDFEditError):
+        replace_spans_text(doc, page, [alvo], ['palavra ' * 3000],
+                           FormatOverride(size=60.0))
+
+    texto = page.get_text()
+    doc.close()
+    assert 'ALVO' in texto, 'o trecho foi apagado mesmo com a edição falhando'
+    assert 'VIZINHO' in texto
