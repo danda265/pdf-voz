@@ -1,4 +1,5 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_data_files
 
 a = Analysis(
     ['main.py'],
@@ -7,8 +8,9 @@ a = Analysis(
     datas=[
         # Tesseract embutido — exe + DLLs + tessdata (por + eng)
         ('tesseract', 'tesseract'),
-    ],
+    ] + collect_data_files('pptx'),   # modelo padrao de apresentacao usado na conversao para PowerPoint
     hiddenimports=[
+        'pptx',
         'PyQt6', 'PyQt6.QtCore', 'PyQt6.QtWidgets', 'PyQt6.QtGui', 'PyQt6.sip',
         'pygame', 'pygame.mixer',
         'edge_tts', 'edge_tts.communicate', 'edge_tts.list_voices',

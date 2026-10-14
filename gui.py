@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import bisect
 import itertools
+import os
 import re
 import sys
 import threading
@@ -16,7 +17,7 @@ from PyQt6.QtGui import (
 )
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QFileDialog, QFrame,
-    QHBoxLayout, QLabel, QMainWindow, QMessageBox, QPushButton,
+    QHBoxLayout, QLabel, QMainWindow, QMenu, QMessageBox, QPushButton,
     QProgressBar, QSlider, QSpinBox, QStackedWidget, QTextEdit, QVBoxLayout, QWidget,
 )
 
@@ -29,6 +30,10 @@ from pdf_editor import (
     insert_free_text, open_for_edit, replace_spans_text, save_copy, spans_for_page,
 )
 from pdf_editor_view import PageScrollArea, SpanEditPopup
+from pdf_to_pptx import (
+    MODO_EDITAVEL, MODO_IMAGEM, ConversaoCancelada, ConversaoError, ResultadoConversao,
+    converter_pdf_para_pptx,
+)
 from atualizacao import procurar_novidade
 
 APP_VERSION = '1.3.0'   # fonte única da versão — o instalador (.iss) deve usar o mesmo valor
@@ -191,6 +196,37 @@ class ExportThread(QThread):
             self.error.emit(sanitize_error_message(str(exc)))
 
 
+class ConverterThread(QThread):
+    progress = pyqtSignal(int, int)
+    done     = pyqtSignal(object)   # ResultadoConversao
+    error    = pyqtSignal(str)
+
+    def __init__(self, origem: str, destino: str, modo: str):
+        super().__init__()
+        self.origem  = origem
+        self.destino = destino
+        self.modo    = modo
+        self._cancelar = threading.Event()
+
+    def cancelar(self) -> None:
+        self._cancelar.set()
+
+    def _avanco(self, atual: int, total: int) -> None:
+        self.progress.emit(atual, total)
+        if self._cancelar.is_set():
+            raise ConversaoCancelada()
+
+    def run(self) -> None:
+        try:
+            self.done.emit(converter_pdf_para_pptx(self.origem, self.destino, self.modo, self._avanco))
+        except ConversaoCancelada:
+            pass
+        except ConversaoError as exc:
+            self.error.emit(str(exc))
+        except Exception as exc:
+            self.error.emit(sanitize_error_message(str(exc)))
+
+
 class VerificaAtualizacao(QThread):
     """Consulta o GitHub em segundo plano. Silenciosa quando nao ha novidade ou rede."""
     encontrou = pyqtSignal(str, str)   # versao, link
@@ -229,6 +265,8 @@ class MainWindow(QMainWindow):
         self.speech_thread: Optional[SpeechThread] = None
         self.loader_thread: Optional[LoaderThread] = None
         self.export_thread: Optional[ExportThread] = None
+        self.converter_thread: Optional[ConverterThread] = None
+        self._pdf_aberto = False            # o arquivo carregado e um PDF (so ele converte)
         self._last_dir = str(Path.home())
         self.edit_session: Optional[EditSession] = None
         self.edit_page_index = 0
@@ -321,9 +359,25 @@ class MainWindow(QMainWindow):
         self.edit_mode_button.toggled.connect(self._on_edit_mode_toggled)
         self.theme_button.clicked.connect(self._toggle_theme)
 
+        self.convert_button = QPushButton('Converter')
+        self.convert_button.setObjectName('HeaderBtn')
+        self.convert_button.setFixedHeight(36)
+        self.convert_button.setEnabled(False)
+        self.convert_button.setToolTip('Converte o PDF aberto para outro formato')
+        menu_converter = QMenu(self.convert_button)
+        self.act_pptx_editavel = menu_converter.addAction('PowerPoint editável (.pptx)')
+        self.act_pptx_editavel.setToolTip('O texto vira caixas de texto que você pode editar; '
+                                          'fotos e desenhos ficam no fundo do slide')
+        self.act_pptx_imagem = menu_converter.addAction('PowerPoint só com imagens (.pptx)')
+        self.act_pptx_imagem.setToolTip('Cada página vira uma imagem: idêntico ao PDF, sem edição')
+        self.act_pptx_editavel.triggered.connect(lambda: self.converter_para_pptx(MODO_EDITAVEL))
+        self.act_pptx_imagem.triggered.connect(lambda: self.converter_para_pptx(MODO_IMAGEM))
+        self.convert_button.setMenu(menu_converter)
+
         hbox.addWidget(self.open_button)
         hbox.addWidget(self.close_button)
         hbox.addWidget(self.edit_mode_button)
+        hbox.addWidget(self.convert_button)
         hbox.addWidget(self._vline())
         hbox.addWidget(self.export_button)
         hbox.addWidget(self._vline())
@@ -829,9 +883,13 @@ class MainWindow(QMainWindow):
         )
         self._set_reading_buttons(True)
         self.edit_mode_button.setEnabled(kind == 'PDF')
+        self._pdf_aberto = (kind == 'PDF')
+        self._atualizar_botao_converter()
 
     def close_document(self) -> None:
         self.stop_reading()
+        self._pdf_aberto = False
+        self._atualizar_botao_converter()
         self.current_file = None
         self.current_text = ''
         self.total_pages  = 0
@@ -949,6 +1007,87 @@ class MainWindow(QMainWindow):
         self.export_thread.error.connect(self._show_error)
         self.export_thread.finished.connect(self.export_thread.deleteLater)
         self.export_thread.start()
+
+    # ── Conversão ─────────────────────────────────────────────────────────────
+
+    def _atualizar_botao_converter(self) -> None:
+        convertendo = self.converter_thread is not None and self.converter_thread.isRunning()
+        self.convert_button.setEnabled(self._pdf_aberto and not convertendo)
+
+    def converter_para_pptx(self, modo: str) -> None:
+        if not (self.current_file and self._pdf_aberto):
+            QMessageBox.information(self, 'Sem PDF', 'Abra um PDF antes de converter.')
+            return
+        if self._edicoes_pendentes:
+            resposta = QMessageBox.question(
+                self, 'Edições não salvas',
+                'Há edições que ainda não foram salvas. A conversão usa o PDF como está no disco, '
+                'sem elas.\n\nConverter mesmo assim?',
+            )
+            if resposta != QMessageBox.StandardButton.Yes:
+                return
+        origem = Path(self.current_file)
+        sugestao = str(origem.with_suffix('.pptx'))
+        destino, _ = QFileDialog.getSaveFileName(
+            self, 'Salvar PowerPoint', sugestao, 'PowerPoint (*.pptx)',
+        )
+        if not destino:
+            return
+        if not destino.lower().endswith('.pptx'):
+            destino += '.pptx'
+        self._iniciar_conversao(modo, destino)
+
+    def _iniciar_conversao(self, modo: str, destino: str) -> None:
+        self.progress_bar.setValue(0)
+        self.status_label.setText('Convertendo para PowerPoint...')
+        self.converter_thread = ConverterThread(self.current_file, destino, modo)
+        self.converter_thread.progress.connect(self._progresso_da_conversao)
+        self.converter_thread.done.connect(self._conversao_concluida)
+        self.converter_thread.error.connect(self._conversao_falhou)
+        self.converter_thread.finished.connect(self._conversao_terminou)
+        self.converter_thread.start()
+        self._atualizar_botao_converter()
+
+    def _progresso_da_conversao(self, atual: int, total: int) -> None:
+        self.progress_bar.setValue(int(atual / max(total, 1) * 100))
+        self.status_label.setText(f'Convertendo para PowerPoint: página {atual} de {total}...')
+
+    def _conversao_concluida(self, resultado: ResultadoConversao) -> None:
+        nome = Path(resultado.destino).name
+        self.status_label.setText(f'PowerPoint salvo: "{nome}"  •  {resultado.paginas} slides')
+        linhas = [f'Salvo em:\n{resultado.destino}', f'{resultado.paginas} slides criados.']
+        if resultado.caixas_de_texto:
+            linhas.append(f'{resultado.caixas_de_texto} caixas de texto editáveis.')
+        if resultado.paginas_sem_texto_editavel:
+            linhas.append(
+                f'{resultado.paginas_sem_texto_editavel} página(s) não tinham texto editável '
+                '(escaneadas, giradas ou só imagens) e ficaram como imagem no slide.'
+            )
+        self._avisar_conversao_pronta('\n\n'.join(linhas), resultado.destino)
+
+    def _avisar_conversao_pronta(self, texto: str, destino: str) -> None:
+        caixa = QMessageBox(self)
+        caixa.setIcon(QMessageBox.Icon.Information)
+        caixa.setWindowTitle('PowerPoint salvo')
+        caixa.setText(texto)
+        abrir = caixa.addButton('Abrir o arquivo', QMessageBox.ButtonRole.AcceptRole)
+        caixa.addButton('Fechar', QMessageBox.ButtonRole.RejectRole)
+        caixa.exec()
+        if caixa.clickedButton() is abrir:
+            try:
+                os.startfile(destino)   # noqa: S606 — abre no programa padrão do usuário
+            except OSError as exc:
+                QMessageBox.warning(self, 'Não foi possível abrir', sanitize_error_message(str(exc)))
+
+    def _conversao_falhou(self, mensagem: str) -> None:
+        self.progress_bar.setValue(0)
+        self._show_error(mensagem)
+
+    def _conversao_terminou(self) -> None:
+        if self.converter_thread is not None:
+            self.converter_thread.deleteLater()
+            self.converter_thread = None
+        self._atualizar_botao_converter()
 
     # ── Highlight ─────────────────────────────────────────────────────────────
 
@@ -1126,6 +1265,10 @@ class MainWindow(QMainWindow):
         if self.speech_thread:
             self.speech_thread.stop_speech()
             self.speech_thread.wait(3000)
+        if self.converter_thread is not None:
+            # cancela entre uma pagina e outra; nada e gravado se nao chegou ao fim
+            self.converter_thread.cancelar()
+            self.converter_thread.wait(5000)
         if self.edit_session:
             # fecha o documento de edição aberto mesmo se o usuário nunca saiu do modo Editar PDF
             self.edit_session.doc.close()

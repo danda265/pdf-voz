@@ -328,3 +328,94 @@ def test_desfazer_fecha_a_caixa_de_edicao(qtbot, sample_pdf, monkeypatch):
     assert 'Ola mundo' in window.edit_session.doc[0].get_text()
     window.edit_mode_button.setChecked(False)
     window.close()
+
+
+# ── Conversao para PowerPoint ────────────────────────────────────────────────
+
+def _janela_com_pdf(qtbot, caminho):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.current_file = str(caminho)
+    window._document_loaded('texto', 1, 'PDF', ['texto'])
+    return window
+
+
+def test_botao_converter_so_habilita_com_pdf_aberto(qtbot, sample_pdf):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    assert not window.convert_button.isEnabled()
+    window.current_file = str(sample_pdf)
+    window._document_loaded('texto', 1, 'PDF', ['texto'])
+    assert window.convert_button.isEnabled()
+    window.close_document()
+    assert not window.convert_button.isEnabled()
+    window._document_loaded('texto', 1, 'Word', [])
+    assert not window.convert_button.isEnabled()
+    window.close()
+
+
+def test_conversao_pelo_app_grava_o_pptx(qtbot, sample_pdf, tmp_path, monkeypatch):
+    from pptx import Presentation
+    from pdf_to_pptx import MODO_EDITAVEL
+    window = _janela_com_pdf(qtbot, sample_pdf)
+    avisos = []
+    monkeypatch.setattr(window, '_avisar_conversao_pronta', lambda texto, destino: avisos.append((texto, destino)))
+    destino = tmp_path / 'saida.pptx'
+    window._iniciar_conversao(MODO_EDITAVEL, str(destino))
+    qtbot.waitUntil(lambda: window.converter_thread is None, timeout=10000)
+    assert destino.exists() and len(Presentation(str(destino)).slides) == 1
+    assert len(avisos) == 1 and 'caixas de texto' in avisos[0][0] and avisos[0][1] == str(destino)
+    assert window.convert_button.isEnabled()
+    assert window.progress_bar.value() == 100
+    window.close()
+
+
+def test_conversao_com_erro_mostra_a_mensagem_e_libera_o_botao(qtbot, sample_pdf, tmp_path, monkeypatch):
+    from pdf_to_pptx import MODO_EDITAVEL
+    window = _janela_com_pdf(qtbot, sample_pdf)
+    erros = []
+    monkeypatch.setattr(window, '_show_error', erros.append)
+    window._iniciar_conversao(MODO_EDITAVEL, str(sample_pdf))   # saida = o proprio PDF: recusado
+    qtbot.waitUntil(lambda: window.converter_thread is None, timeout=10000)
+    assert len(erros) == 1 and 'próprio PDF' in erros[0]
+    assert window.convert_button.isEnabled()
+    window.close()
+
+
+def test_conversao_cancelada_nao_grava_nada(qtbot, multipage_pdf, tmp_path):
+    from gui import ConverterThread
+    from pdf_to_pptx import MODO_IMAGEM
+    destino = tmp_path / 'saida.pptx'
+    thread = ConverterThread(str(multipage_pdf), str(destino), MODO_IMAGEM)
+    concluidos, erros = [], []
+    thread.done.connect(concluidos.append)
+    thread.error.connect(erros.append)
+    thread.cancelar()           # antes de comecar: o primeiro aviso de progresso ja interrompe
+    thread.start()
+    assert thread.wait(10000)
+    assert concluidos == [] and erros == []
+    assert not destino.exists() and list(tmp_path.glob('*.parcial')) == []
+
+
+def test_fechar_a_janela_espera_a_conversao_terminar(qtbot, multipage_pdf, tmp_path, monkeypatch):
+    from pdf_to_pptx import MODO_IMAGEM
+    window = _janela_com_pdf(qtbot, multipage_pdf)
+    monkeypatch.setattr(window, '_avisar_conversao_pronta', lambda *a: None)
+    window._iniciar_conversao(MODO_IMAGEM, str(tmp_path / 'saida.pptx'))
+    window.close()
+    assert window.converter_thread is None or not window.converter_thread.isRunning()
+    assert list((tmp_path).glob('*.parcial')) == []
+
+
+def test_edicoes_nao_salvas_pedem_confirmacao(qtbot, sample_pdf, monkeypatch):
+    from PyQt6.QtWidgets import QMessageBox
+    window = _janela_com_pdf(qtbot, sample_pdf)
+    window._edicoes_pendentes = True
+    perguntas = []
+    monkeypatch.setattr(QMessageBox, 'question',
+                        staticmethod(lambda *a, **k: perguntas.append(a) or QMessageBox.StandardButton.No))
+    iniciou = []
+    monkeypatch.setattr(window, '_iniciar_conversao', lambda *a: iniciou.append(a))
+    window.converter_para_pptx('editavel')
+    assert len(perguntas) == 1 and iniciou == []
+    window.close()

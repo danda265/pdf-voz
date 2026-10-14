@@ -4,6 +4,7 @@ edge-tts>=6.1
 pygame>=2.5; python_version < "3.14"
 pygame-ce>=2.5; python_version >= "3.14"
 python-docx>=1.1
+python-pptx>=1.0
 pytesseract>=0.3
 Pillow>=10.0
 pywin32>=306; platform_system == "Windows"

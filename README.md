@@ -56,6 +56,19 @@ Quatro gestos, sem precisar ligar modo nenhum:
 
 **O arquivo original nunca é alterado.** Toda edição vai para uma cópia nova.
 
+### Converter para PowerPoint
+Com um PDF aberto, **Converter** → escolha o modo e o local onde salvar o `.pptx`:
+
+- **PowerPoint editável** — cada página vira um slide. O texto volta como caixas de texto do
+  PowerPoint, na mesma posição, fonte, tamanho e cor; fotos e desenhos ficam no fundo do slide.
+- **PowerPoint só com imagens** — cada página vira uma imagem no slide: idêntico ao PDF, mas
+  sem nada para editar.
+
+No modo editável, o que não vira texto fica como imagem no slide: PDF escaneado, página girada e
+texto na vertical. O app informa quantas páginas ficaram assim. As quebras de linha são as do PDF
+(cada linha é fixa, o PowerPoint não reflui o parágrafo), o espaçamento entre letras não é
+reproduzido e, se a fonte original não existir no computador, o PowerPoint usa uma parecida.
+
 ### Abrir PDFs direto no app
 Clique com o botão direito em um PDF → **Abrir com** → **Escolher outro aplicativo** → **PDF VOZ** →
 marque *"Sempre usar este aplicativo"*.
@@ -117,6 +130,7 @@ deve bater com `MyAppVersion` em `installer.iss`.
 | `gui.py` | Janela principal, modo leitura e modo edição |
 | `pdf_editor.py` | Motor de edição de PDF (sem dependência de interface) |
 | `pdf_editor_view.py` | Canvas da página e caixa de edição |
+| `pdf_to_pptx.py` | Conversão de PDF para PowerPoint (sem dependência de interface) |
 | `document_reader.py` · `pdf_reader.py` · `word_reader.py` | Extração de texto |
 | `tts_engine.py` · `audio_player.py` | Síntese e reprodução de voz |
 | `ocr.py` | OCR para PDFs escaneados |
@@ -140,6 +154,7 @@ com o código-fonte disponível — o que este repositório cumpre.
 | PyQt6 | GPL-3.0 |
 | pygame-ce | LGPL-2.1 |
 | python-docx | MIT |
+| python-pptx | MIT |
 | Pillow | MIT-CMU |
 | pytesseract | Apache-2.0 |
 | Tesseract OCR | Apache-2.0 |
