@@ -340,17 +340,112 @@ def _janela_com_pdf(qtbot, caminho):
     return window
 
 
-def test_botao_converter_so_habilita_com_pdf_aberto(qtbot, sample_pdf):
+def _escolhe_arquivo(monkeypatch, caminho):
+    """Faz o seletor de arquivo 'Abrir' devolver `caminho` (ou nada, se for None)."""
+    from PyQt6.QtWidgets import QFileDialog
+    monkeypatch.setattr(QFileDialog, 'getOpenFileName',
+                        staticmethod(lambda *a, **k: (str(caminho) if caminho else '', '')))
+
+
+def test_ferramentas_do_cabecalho_ficam_disponiveis_sem_arquivo_aberto(qtbot):
     window = MainWindow()
     qtbot.addWidget(window)
-    assert not window.convert_button.isEnabled()
-    window.current_file = str(sample_pdf)
-    window._document_loaded('texto', 1, 'PDF', ['texto'])
-    assert window.convert_button.isEnabled()
-    window.close_document()
-    assert not window.convert_button.isEnabled()
+    for botao in (window.convert_button, window.edit_mode_button, window.export_button,
+                  window.merge_button, window.open_button):
+        assert botao.isEnabled()
+    assert not window.close_button.isEnabled()        # nao ha o que fechar
     window._document_loaded('texto', 1, 'Word', [])
-    assert not window.convert_button.isEnabled()
+    assert window.convert_button.isEnabled() and window.edit_mode_button.isEnabled()
+    window.close_document()
+    assert window.convert_button.isEnabled() and window.edit_mode_button.isEnabled()
+    window.close()
+
+
+def test_converter_sem_pdf_aberto_pede_o_arquivo_e_converte(qtbot, sample_pdf, tmp_path, monkeypatch):
+    from PyQt6.QtWidgets import QFileDialog
+    from pptx import Presentation
+    from pdf_to_pptx import MODO_EDITAVEL
+    window = MainWindow()
+    qtbot.addWidget(window)
+    _escolhe_arquivo(monkeypatch, sample_pdf)
+    destino = tmp_path / 'saida.pptx'
+    monkeypatch.setattr(QFileDialog, 'getSaveFileName', staticmethod(lambda *a, **k: (str(destino), '')))
+    monkeypatch.setattr(window, '_avisar_conversao_pronta', lambda texto, d: None)
+    window.converter_para_pptx(MODO_EDITAVEL)
+    qtbot.waitUntil(lambda: window.converter_thread is None, timeout=10000)
+    assert len(Presentation(str(destino)).slides) == 1
+    assert window.current_file is None                 # converteu sem abrir o arquivo no leitor
+    window.close()
+
+
+def test_converter_cancelando_o_seletor_nao_faz_nada(qtbot, monkeypatch):
+    from pdf_to_pptx import MODO_EDITAVEL
+    window = MainWindow()
+    qtbot.addWidget(window)
+    _escolhe_arquivo(monkeypatch, None)
+    iniciou = []
+    monkeypatch.setattr(window, '_iniciar_conversao', lambda *a: iniciou.append(a))
+    window.converter_para_pptx(MODO_EDITAVEL)
+    assert iniciou == [] and window.converter_thread is None
+    window.close()
+
+
+def test_editar_pdf_sem_arquivo_pede_o_pdf_e_entra_no_modo_edicao(qtbot, sample_pdf, monkeypatch):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    _escolhe_arquivo(monkeypatch, sample_pdf)
+    window.edit_mode_button.click()
+    qtbot.waitUntil(lambda: window.edit_session is not None, timeout=10000)
+    assert window.edit_mode_button.isChecked() and window.stack.currentIndex() == 1
+    assert window.current_file == str(sample_pdf)
+    window.close()
+
+
+def test_editar_pdf_cancelando_o_seletor_desmarca_o_botao(qtbot, monkeypatch):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    _escolhe_arquivo(monkeypatch, None)
+    window.edit_mode_button.click()
+    assert not window.edit_mode_button.isChecked() and window.edit_session is None
+    assert window.stack.currentIndex() == 0
+    window.close()
+
+
+def test_editar_pdf_com_word_aberto_pede_um_pdf(qtbot, sample_pdf, monkeypatch):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    window.current_file = 'C:/docs/relatorio.docx'
+    window._document_loaded('texto', 1, 'Word', [])
+    _escolhe_arquivo(monkeypatch, sample_pdf)
+    window.edit_mode_button.click()
+    qtbot.waitUntil(lambda: window.edit_session is not None, timeout=10000)
+    assert window.current_file == str(sample_pdf)
+    window.close()
+
+
+def test_exportar_mp3_sem_arquivo_pede_o_arquivo_e_retoma_depois_de_carregar(qtbot, sample_pdf, monkeypatch):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    _escolhe_arquivo(monkeypatch, sample_pdf)
+    window.export_mp3()                                   # sem texto: pede o arquivo
+    retomou = []
+    monkeypatch.setattr(window, 'export_mp3', lambda: retomou.append(True))   # o real falaria com a internet
+    qtbot.waitUntil(lambda: bool(retomou), timeout=10000)
+    assert window.current_text.strip() and window._depois_de_carregar is None
+    window.close()
+
+
+def test_arquivo_que_nao_abre_descarta_a_tarefa_pendente(qtbot, tmp_path, monkeypatch):
+    window = MainWindow()
+    qtbot.addWidget(window)
+    ruim = tmp_path / 'ruim.pdf'
+    ruim.write_bytes(b'isto nao e um pdf')
+    _escolhe_arquivo(monkeypatch, ruim)
+    erros, retomou = [], []
+    monkeypatch.setattr(window, '_show_error', erros.append)
+    window._pedir_arquivo_e_depois(lambda: retomou.append(True))
+    qtbot.waitUntil(lambda: bool(erros), timeout=10000)
+    assert window._depois_de_carregar is None and retomou == []
     window.close()
 
 

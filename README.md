@@ -25,6 +25,10 @@ publicador. Para instalar:
 
 ## Usar
 
+As ferramentas do topo — **Editar PDF**, **Converter**, **Juntar PDFs** e **Exportar MP3** — já estão
+disponíveis ao abrir o app. Sem arquivo aberto, cada uma pede o arquivo na hora; só **Fechar arquivo**
+espera haver um aberto.
+
 ### Ler em voz alta
 Abra um PDF ou Word, escolha a voz e clique em **Ler**. Dá para ajustar velocidade e volume durante a
 leitura, começar de uma página específica e exportar a narração em MP3.

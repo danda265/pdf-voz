@@ -8,7 +8,7 @@ import sys
 import threading
 import traceback
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Callable, Optional, Tuple
 
 from PyQt6.QtCore import QPoint, Qt, QThread, pyqtSignal
 from PyQt6.QtGui import (
@@ -267,7 +267,8 @@ class MainWindow(QMainWindow):
         self.loader_thread: Optional[LoaderThread] = None
         self.export_thread: Optional[ExportThread] = None
         self.converter_thread: Optional[ConverterThread] = None
-        self._pdf_aberto = False            # o arquivo carregado e um PDF (so ele converte)
+        self._pdf_aberto = False            # o arquivo carregado e um PDF
+        self._depois_de_carregar: Optional[Callable[[], None]] = None   # tarefa que espera o arquivo carregar
         self._last_dir = str(Path.home())
         self.edit_session: Optional[EditSession] = None
         self.edit_page_index = 0
@@ -336,6 +337,7 @@ class MainWindow(QMainWindow):
         self.open_button   = QPushButton('Abrir  PDF / Word')
         self.close_button  = QPushButton('Fechar arquivo')
         self.export_button = QPushButton('Exportar MP3')
+        self.export_button.setToolTip('Exporta a leitura em MP3 (se não houver arquivo aberto, pede o arquivo)')
         for btn in (self.open_button, self.close_button, self.export_button):
             btn.setObjectName('HeaderBtn')
             btn.setFixedHeight(36)
@@ -355,7 +357,7 @@ class MainWindow(QMainWindow):
         self.edit_mode_button = QPushButton('Editar PDF')
         self.edit_mode_button.setObjectName('HeaderBtn')
         self.edit_mode_button.setCheckable(True)
-        self.edit_mode_button.setEnabled(False)
+        self.edit_mode_button.setToolTip('Edita o texto de um PDF (se não houver um aberto, pede o arquivo)')
         self.edit_mode_button.setFixedHeight(36)
         self.edit_mode_button.toggled.connect(self._on_edit_mode_toggled)
         self.theme_button.clicked.connect(self._toggle_theme)
@@ -363,8 +365,7 @@ class MainWindow(QMainWindow):
         self.convert_button = QPushButton('Converter')
         self.convert_button.setObjectName('HeaderBtn')
         self.convert_button.setFixedHeight(36)
-        self.convert_button.setEnabled(False)
-        self.convert_button.setToolTip('Converte o PDF aberto para outro formato')
+        self.convert_button.setToolTip('Converte um PDF para outro formato (o aberto, ou pede o arquivo)')
         menu_converter = QMenu(self.convert_button)
         self.act_pptx_editavel = menu_converter.addAction('PowerPoint editável (.pptx)')
         self.act_pptx_editavel.setToolTip('Textos, formas e fotos viram objetos que você pode editar; '
@@ -587,8 +588,17 @@ class MainWindow(QMainWindow):
 
         return container
 
+    def _tem_pdf(self) -> bool:
+        return bool(self.current_file) and self.current_file.lower().endswith('.pdf')
+
     def _on_edit_mode_toggled(self, checked: bool) -> None:
-        if checked:
+        if checked and not self._tem_pdf():
+            # nao ha PDF: desliga o botao sem disparar de novo, pede o arquivo e liga depois de carregar
+            self.edit_mode_button.blockSignals(True)
+            self.edit_mode_button.setChecked(False)
+            self.edit_mode_button.blockSignals(False)
+            self._pedir_arquivo_e_depois(lambda: self.edit_mode_button.setChecked(True), so_pdf=True)
+        elif checked:
             self._enter_edit_mode()
         elif self._confirmar_descarte():
             self._exit_edit_mode()
@@ -852,6 +862,25 @@ class MainWindow(QMainWindow):
         self._last_dir = str(Path(path).parent)
         self._load_file(path)
 
+    def _pedir_arquivo_e_depois(self, depois: Callable[[], None], so_pdf: bool = False) -> bool:
+        """Abre o seletor de arquivo e, quando o arquivo terminar de carregar, executa `depois`.
+
+        E o que deixa as ferramentas do cabecalho (editar, exportar...) clicaveis sem arquivo
+        aberto: o app pede o arquivo na hora em vez de recusar. Devolve False se cancelou."""
+        filtro = 'PDF (*.pdf)' if so_pdf else 'Documentos (*.pdf *.docx *.doc);;PDF (*.pdf);;Word (*.docx *.doc)'
+        path, _ = QFileDialog.getOpenFileName(
+            self, 'Escolher o PDF' if so_pdf else 'Escolher o arquivo', self._last_dir, filtro)
+        if not path:
+            return False
+        self._last_dir = str(Path(path).parent)
+        self._depois_de_carregar = depois
+        self._load_file(path)
+        return True
+
+    def _falha_ao_carregar(self, mensagem: str) -> None:
+        self._depois_de_carregar = None       # o arquivo nao abriu: a tarefa pendente nao faz sentido
+        self._show_error(mensagem)
+
     def _load_file(self, path: str) -> None:
         self.stop_reading()
         # Sai do modo edição antes de trocar de arquivo: manter a sessão antiga aberta
@@ -866,7 +895,7 @@ class MainWindow(QMainWindow):
         self.loader_thread = LoaderThread(path, self.ocr_checkbox.isChecked())
         self.loader_thread.progress.connect(self._update_page_progress)
         self.loader_thread.loaded.connect(self._document_loaded)
-        self.loader_thread.error.connect(self._show_error)
+        self.loader_thread.error.connect(self._falha_ao_carregar)
         self.loader_thread.finished.connect(self.loader_thread.deleteLater)
         self.loader_thread.start()
 
@@ -890,9 +919,11 @@ class MainWindow(QMainWindow):
             f'{kind} carregado: "{fname}"  •  {len(self.current_text):,} caracteres'
         )
         self._set_reading_buttons(True)
-        self.edit_mode_button.setEnabled(kind == 'PDF')
         self._pdf_aberto = (kind == 'PDF')
         self._atualizar_botao_converter()
+        pendente, self._depois_de_carregar = self._depois_de_carregar, None
+        if pendente:
+            pendente()
 
     def close_document(self) -> None:
         self.stop_reading()
@@ -913,7 +944,6 @@ class MainWindow(QMainWindow):
         self.start_page_spin.setSuffix('')
         self.start_page_spin.setEnabled(False)
         self._set_reading_buttons(False)
-        self.edit_mode_button.setEnabled(False)
         self.edit_mode_button.setChecked(False)
         self._clear_temp_audio()
 
@@ -988,7 +1018,7 @@ class MainWindow(QMainWindow):
 
     def export_mp3(self) -> None:
         if not self.current_text.strip():
-            QMessageBox.information(self, 'Sem texto', 'Abra um arquivo antes de exportar.')
+            self._pedir_arquivo_e_depois(lambda: self.export_mp3())
             return
         voice = self._selected_voice()
         if voice not in _ALLOWED_VOICE_IDS:
@@ -1034,22 +1064,27 @@ class MainWindow(QMainWindow):
 
     def _atualizar_botao_converter(self) -> None:
         convertendo = self.converter_thread is not None and self.converter_thread.isRunning()
-        self.convert_button.setEnabled(self._pdf_aberto and not convertendo)
+        self.convert_button.setEnabled(not convertendo)
 
     def converter_para_pptx(self, modo: str) -> None:
-        if not (self.current_file and self._pdf_aberto):
-            QMessageBox.information(self, 'Sem PDF', 'Abra um PDF antes de converter.')
-            return
-        if self._edicoes_pendentes:
-            resposta = QMessageBox.question(
-                self, 'Edições não salvas',
-                'Há edições que ainda não foram salvas. A conversão usa o PDF como está no disco, '
-                'sem elas.\n\nConverter mesmo assim?',
-            )
-            if resposta != QMessageBox.StandardButton.Yes:
+        if self.current_file and self._pdf_aberto:
+            origem = self.current_file
+            if self._edicoes_pendentes:
+                resposta = QMessageBox.question(
+                    self, 'Edições não salvas',
+                    'Há edições que ainda não foram salvas. A conversão usa o PDF como está no disco, '
+                    'sem elas.\n\nConverter mesmo assim?',
+                )
+                if resposta != QMessageBox.StandardButton.Yes:
+                    return
+        else:
+            # sem PDF aberto: converte um arquivo escolhido na hora, sem abri-lo no leitor
+            origem, _ = QFileDialog.getOpenFileName(
+                self, 'Escolher o PDF para converter', self._last_dir, 'PDF (*.pdf)')
+            if not origem:
                 return
-        origem = Path(self.current_file)
-        sugestao = str(origem.with_suffix('.pptx'))
+            self._last_dir = str(Path(origem).parent)
+        sugestao = str(Path(origem).with_suffix('.pptx'))
         destino, _ = QFileDialog.getSaveFileName(
             self, 'Salvar PowerPoint', sugestao, 'PowerPoint (*.pptx)',
         )
@@ -1057,12 +1092,12 @@ class MainWindow(QMainWindow):
             return
         if not destino.lower().endswith('.pptx'):
             destino += '.pptx'
-        self._iniciar_conversao(modo, destino)
+        self._iniciar_conversao(modo, destino, origem)
 
-    def _iniciar_conversao(self, modo: str, destino: str) -> None:
+    def _iniciar_conversao(self, modo: str, destino: str, origem: Optional[str] = None) -> None:
         self.progress_bar.setValue(0)
         self.status_label.setText('Convertendo para PowerPoint...')
-        self.converter_thread = ConverterThread(self.current_file, destino, modo)
+        self.converter_thread = ConverterThread(origem or self.current_file, destino, modo)
         self.converter_thread.progress.connect(self._progresso_da_conversao)
         self.converter_thread.done.connect(self._conversao_concluida)
         self.converter_thread.error.connect(self._conversao_falhou)
@@ -1223,7 +1258,6 @@ class MainWindow(QMainWindow):
 
     def _set_reading_buttons(self, enabled: bool) -> None:
         self.read_button.setEnabled(enabled)
-        self.export_button.setEnabled(enabled)
         self.close_button.setEnabled(enabled)
         self.pause_button.setEnabled(False)
         self.resume_button.setEnabled(False)
@@ -1236,7 +1270,7 @@ class MainWindow(QMainWindow):
         self.resume_button.setEnabled(reading)
         self.stop_button.setEnabled(reading)
         self.open_button.setEnabled(not reading)
-        self.export_button.setEnabled(has_text and not reading)
+        self.export_button.setEnabled(not reading)
         self.start_page_spin.setEnabled(self._can_pick_page and not reading)
 
     def _show_error(self, message: str) -> None:
