@@ -30,6 +30,7 @@ from pdf_editor import (
     insert_free_text, open_for_edit, replace_spans_text, save_copy, spans_for_page,
 )
 from pdf_editor_view import PageScrollArea, SpanEditPopup
+from pdf_merge_dialog import JuntarDialog
 from pdf_to_pptx import (
     MODO_EDITAVEL, MODO_IMAGEM, ConversaoCancelada, ConversaoError, ResultadoConversao,
     converter_pdf_para_pptx,
@@ -317,7 +318,7 @@ class MainWindow(QMainWindow):
         header.setFixedHeight(66)
         hbox = QHBoxLayout(header)
         hbox.setContentsMargins(20, 0, 20, 0)
-        hbox.setSpacing(10)
+        hbox.setSpacing(8)   # 8 e nao 10: com 6 botoes, a 900 px de largura o primeiro saia cortado
 
         title_col = QWidget()
         tcol = QVBoxLayout(title_col)
@@ -374,10 +375,17 @@ class MainWindow(QMainWindow):
         self.act_pptx_imagem.triggered.connect(lambda: self.converter_para_pptx(MODO_IMAGEM))
         self.convert_button.setMenu(menu_converter)
 
+        self.merge_button = QPushButton('Juntar PDFs')
+        self.merge_button.setObjectName('HeaderBtn')
+        self.merge_button.setFixedHeight(36)
+        self.merge_button.setToolTip('Junta vários PDFs em um só, na ordem e com as páginas que você escolher')
+        self.merge_button.clicked.connect(self.abrir_juntar_pdfs)
+
         hbox.addWidget(self.open_button)
         hbox.addWidget(self.close_button)
         hbox.addWidget(self.edit_mode_button)
         hbox.addWidget(self.convert_button)
+        hbox.addWidget(self.merge_button)
         hbox.addWidget(self._vline())
         hbox.addWidget(self.export_button)
         hbox.addWidget(self._vline())
@@ -1007,6 +1015,20 @@ class MainWindow(QMainWindow):
         self.export_thread.error.connect(self._show_error)
         self.export_thread.finished.connect(self.export_thread.deleteLater)
         self.export_thread.start()
+
+    # ── Juntar PDFs ───────────────────────────────────────────────────────────
+
+    def _criar_dialogo_juntar(self) -> JuntarDialog:
+        # se ha um PDF aberto, ele ja entra na lista: o caso comum e juntar outros a ele
+        aberto = self.current_file if self._pdf_aberto else None
+        dialogo = JuntarDialog(self, self._last_dir, aberto)
+        dialogo.abrir_resultado.connect(self._load_file)
+        return dialogo
+
+    def abrir_juntar_pdfs(self) -> None:
+        dialogo = self._criar_dialogo_juntar()
+        dialogo.exec()
+        dialogo.deleteLater()
 
     # ── Conversão ─────────────────────────────────────────────────────────────
 

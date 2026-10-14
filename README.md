@@ -56,6 +56,22 @@ Quatro gestos, sem precisar ligar modo nenhum:
 
 **O arquivo original nunca é alterado.** Toda edição vai para uma cópia nova.
 
+### Juntar PDFs
+**Juntar PDFs** abre uma janela para montar um PDF novo a partir de vários:
+
+- **Adicionar PDFs...** (ou arraste os arquivos para a janela). Se há um PDF aberto no app, ele já
+  entra na lista.
+- **▲ Subir / ▼ Descer** mudam a ordem: o resultado segue a ordem da lista.
+- Na coluna **Quais páginas usar** escreva as páginas que quer de cada arquivo — `3`, `2-5`, `8-`
+  (da 8 até o fim), `-3` (até a 3) ou combinações como `1-3, 5, 8-`. Em branco, o arquivo entra
+  inteiro. As páginas saem na ordem em que você as escreve (`5, 1` coloca a 5 antes da 1) e dá para
+  repetir uma página. Com um arquivo só, vira "extrair páginas".
+- O resumo mostra quantas páginas o resultado terá e avisa qual arquivo está com a seleção errada.
+
+Os arquivos originais nunca são alterados e o resultado só aparece no disco quando termina. PDFs com
+senha precisam ser abertos e salvos sem senha antes. Os marcadores (índice) de cada arquivo não são
+levados para o PDF juntado.
+
 ### Converter para PowerPoint
 Com um PDF aberto, **Converter** → escolha o modo e o local onde salvar o `.pptx`:
 
@@ -131,6 +147,7 @@ deve bater com `MyAppVersion` em `installer.iss`.
 | `pdf_editor.py` | Motor de edição de PDF (sem dependência de interface) |
 | `pdf_editor_view.py` | Canvas da página e caixa de edição |
 | `pdf_to_pptx.py` | Conversão de PDF para PowerPoint (sem dependência de interface) |
+| `pdf_merge.py` · `pdf_merge_dialog.py` | Juntar PDFs: motor (sem interface) e janela de montagem |
 | `document_reader.py` · `pdf_reader.py` · `word_reader.py` | Extração de texto |
 | `tts_engine.py` · `audio_player.py` | Síntese e reprodução de voz |
 | `ocr.py` | OCR para PDFs escaneados |
