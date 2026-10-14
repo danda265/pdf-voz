@@ -136,6 +136,7 @@ def _embedded_font_buffer(doc: fitz.Document, page: fitz.Page, family_hint: Opti
 # Fontes do Windows cujo arquivo nao se chama como a familia
 _ALIAS_ARQUIVO = {
     'timesnewroman': 'times',
+    'consolas': 'consola',
     'couriernew': 'cour',
     'lucidaconsole': 'lucon',
     'comicsansms': 'comic',

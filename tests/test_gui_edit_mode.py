@@ -419,3 +419,23 @@ def test_edicoes_nao_salvas_pedem_confirmacao(qtbot, sample_pdf, monkeypatch):
     window.converter_para_pptx('editavel')
     assert len(perguntas) == 1 and iniciou == []
     window.close()
+
+
+def test_mensagem_da_conversao_conta_formas_imagens_e_o_que_ficou_como_imagem(qtbot, tmp_path, monkeypatch):
+    import fitz
+    from pdf_to_pptx import MODO_EDITAVEL
+    origem = tmp_path / 'forma.pdf'
+    doc = fitz.open()
+    page = doc.new_page(width=300, height=200)
+    page.draw_rect(fitz.Rect(20, 20, 200, 120), color=None, fill=(1, 0, 0))
+    page.insert_text((40, 70), 'texto', fontsize=14, fontname='helv', color=(1, 1, 1))
+    doc.save(str(origem))
+    doc.close()
+    window = _janela_com_pdf(qtbot, origem)
+    avisos = []
+    monkeypatch.setattr(window, '_avisar_conversao_pronta', lambda texto, destino: avisos.append(texto))
+    window._iniciar_conversao(MODO_EDITAVEL, str(tmp_path / 'saida.pptx'))
+    qtbot.waitUntil(lambda: window.converter_thread is None, timeout=10000)
+    assert '1 forma e 0 imagens separadas' in avisos[0] and '1 caixas de texto' in avisos[0]
+    assert 'ficaram como imagem' not in avisos[0]              # nada ficou de fora nesta pagina
+    window.close()

@@ -367,8 +367,8 @@ class MainWindow(QMainWindow):
         self.convert_button.setToolTip('Converte o PDF aberto para outro formato')
         menu_converter = QMenu(self.convert_button)
         self.act_pptx_editavel = menu_converter.addAction('PowerPoint editável (.pptx)')
-        self.act_pptx_editavel.setToolTip('O texto vira caixas de texto que você pode editar; '
-                                          'fotos e desenhos ficam no fundo do slide')
+        self.act_pptx_editavel.setToolTip('Textos, formas e fotos viram objetos que você pode editar; '
+                                          'só o que não dá para separar fica como imagem')
         self.act_pptx_imagem = menu_converter.addAction('PowerPoint só com imagens (.pptx)')
         self.act_pptx_imagem.setToolTip('Cada página vira uma imagem: idêntico ao PDF, sem edição')
         self.act_pptx_editavel.triggered.connect(lambda: self.converter_para_pptx(MODO_EDITAVEL))
@@ -1078,13 +1078,22 @@ class MainWindow(QMainWindow):
         nome = Path(resultado.destino).name
         self.status_label.setText(f'PowerPoint salvo: "{nome}"  •  {resultado.paginas} slides')
         linhas = [f'Salvo em:\n{resultado.destino}', f'{resultado.paginas} slides criados.']
+        if resultado.formas or resultado.imagens:
+            linhas.append(
+                f'{_contagem(resultado.formas, "forma", "formas")} e '
+                f'{_contagem(resultado.imagens, "imagem", "imagens")} separadas: cada uma é um '
+                'objeto do PowerPoint que você pode mover, recolorir, trocar ou apagar.')
         if resultado.caixas_de_texto:
             linhas.append(f'{resultado.caixas_de_texto} caixas de texto editáveis.')
+        if resultado.paginas_com_parte_em_imagem:
+            linhas.append(
+                f'Em {resultado.paginas_com_parte_em_imagem} página(s), partes que não dá para separar '
+                'sem mudar a aparência (degradês, sombras, recortes de formato especial) ficaram '
+                'como imagem no slide.')
         if resultado.paginas_sem_texto_editavel:
             linhas.append(
-                f'{resultado.paginas_sem_texto_editavel} página(s) não tinham texto editável '
-                '(escaneadas, giradas ou só imagens) e ficaram como imagem no slide.'
-            )
+                f'{resultado.paginas_sem_texto_editavel} página(s) não tinham texto para virar '
+                'caixa (escaneadas, giradas ou só imagens).')
         self._avisar_conversao_pronta('\n\n'.join(linhas), resultado.destino)
 
     def _avisar_conversao_pronta(self, texto: str, destino: str) -> None:
@@ -1414,6 +1423,10 @@ def _build_stylesheet(dark: bool) -> str:
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+
+def _contagem(quantidade: int, singular: str, plural: str) -> str:
+    return f'{quantidade} {singular if quantidade == 1 else plural}'
 
 
 def _system_is_dark() -> bool:

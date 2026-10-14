@@ -75,15 +75,30 @@ levados para o PDF juntado.
 ### Converter para PowerPoint
 Com um PDF aberto, **Converter** → escolha o modo e o local onde salvar o `.pptx`:
 
-- **PowerPoint editável** — cada página vira um slide. O texto volta como caixas de texto do
-  PowerPoint, na mesma posição, fonte, tamanho e cor; fotos e desenhos ficam no fundo do slide.
+- **PowerPoint editável** — cada página vira um slide remontado com objetos do PowerPoint, na
+  mesma ordem de empilhamento do PDF:
+  - **texto** em caixas de texto, na mesma posição, fonte, tamanho e cor;
+  - **formas** (retângulos, retângulos arredondados, elipses, linhas, polígonos e curvas) com o
+    preenchimento, o contorno, o tracejado e a transparência do PDF: dá para mover, recolorir,
+    redimensionar, editar os pontos ou apagar;
+  - **fotos e imagens** soltas, com a transparência, para trocar, recortar ou apagar;
+  - o retângulo que cobre a página inteira vira o **fundo do slide**.
 - **PowerPoint só com imagens** — cada página vira uma imagem no slide: idêntico ao PDF, mas
   sem nada para editar.
 
-No modo editável, o que não vira texto fica como imagem no slide: PDF escaneado, página girada e
-texto na vertical. O app informa quantas páginas ficaram assim. As quebras de linha são as do PDF
-(cada linha é fixa, o PowerPoint não reflui o parágrafo), o espaçamento entre letras não é
-reproduzido e, se a fonte original não existir no computador, o PowerPoint usa uma parecida.
+**Nada fica diferente do PDF sem aviso.** Antes de usar, o app redesenha a página só com os objetos
+que vai criar e compara com a original; se uma foto cortada em canto redondo, uma transparência em
+grupo ou qualquer outra coisa mudaria a aparência, aquela parte (ou a página) continua como imagem.
+Ficam como imagem no slide: degradês e sombreados, formas dentro de recortes de formato especial,
+páginas com centenas de traços (texto vetorizado, mapas), PDF escaneado, página girada e texto na
+vertical. Ao terminar, o app diz quantas formas, imagens e caixas de texto foram criadas e em quantas
+páginas algo ficou como imagem.
+
+Limites: as quebras de linha são as do PDF (cada linha é fixa, o PowerPoint não reflui o parágrafo),
+o espaçamento entre letras não é reproduzido, e, se a fonte original não existir no computador, o
+PowerPoint usa uma parecida. As sombras que o PowerPoint gera ao exportar para PDF chegam como
+imagens soltas ao lado de cada forma. O PowerPoint não tem como "inserir design novo" automático
+(sugestões de layout) a partir de um PDF: o que se recupera são os objetos do slide, não o tema.
 
 ### Abrir PDFs direto no app
 Clique com o botão direito em um PDF → **Abrir com** → **Escolher outro aplicativo** → **PDF VOZ** →
@@ -146,7 +161,7 @@ deve bater com `MyAppVersion` em `installer.iss`.
 | `gui.py` | Janela principal, modo leitura e modo edição |
 | `pdf_editor.py` | Motor de edição de PDF (sem dependência de interface) |
 | `pdf_editor_view.py` | Canvas da página e caixa de edição |
-| `pdf_to_pptx.py` | Conversão de PDF para PowerPoint (sem dependência de interface) |
+| `pdf_to_pptx.py` · `pdf_to_pptx_objetos.py` | Conversão de PDF para PowerPoint (sem dependência de interface): montagem do slide e recriação das formas e imagens |
 | `pdf_merge.py` · `pdf_merge_dialog.py` | Juntar PDFs: motor (sem interface) e janela de montagem |
 | `document_reader.py` · `pdf_reader.py` · `word_reader.py` | Extração de texto |
 | `tts_engine.py` · `audio_player.py` | Síntese e reprodução de voz |

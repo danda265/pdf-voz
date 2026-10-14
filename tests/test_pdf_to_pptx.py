@@ -6,7 +6,8 @@ from pptx import Presentation
 from pptx.util import Emu
 
 from pdf_to_pptx import (
-    MODO_EDITAVEL, MODO_IMAGEM, ConversaoError, _limpa, converter_pdf_para_pptx,
+    MODO_EDITAVEL, MODO_IMAGEM, ConversaoError, _ascendente_do_powerpoint, _limpa, _metricas_win,
+    converter_pdf_para_pptx,
 )
 
 
@@ -44,15 +45,16 @@ def test_modo_editavel_devolve_o_texto_em_caixas(sample_pdf, tmp_path):
     assert resultado.paginas_sem_texto_editavel == 0
 
 
-def test_modo_editavel_tira_o_texto_do_fundo(sample_pdf, tmp_path):
-    """Sem isso o texto apareceria duas vezes: na imagem e na caixa."""
+def test_pagina_so_de_texto_vira_slide_limpo_sem_imagem_de_fundo(sample_pdf, tmp_path):
+    """O texto sai da imagem e vira caixa; sobrando nada, nao ha imagem de fundo a esconder."""
     destino = tmp_path / 'saida.pptx'
-    converter_pdf_para_pptx(str(sample_pdf), str(destino), MODO_EDITAVEL)
-    fundo = _pixmap_da_figura(_figuras(Presentation(str(destino)).slides[0])[0])
-    assert min(fundo.samples) == 255, 'o fundo ainda tem pixels escuros (texto nao foi removido)'
+    resultado = converter_pdf_para_pptx(str(sample_pdf), str(destino), MODO_EDITAVEL)
+    slide = Presentation(str(destino)).slides[0]
+    assert _figuras(slide) == []
+    assert resultado.paginas_com_parte_em_imagem == 0
 
 
-def test_modo_editavel_preserva_desenhos_sob_o_texto(tmp_path):
+def test_forma_sob_o_texto_vira_objeto_e_o_texto_continua_por_cima(tmp_path):
     origem = tmp_path / 'cor.pdf'
     doc = fitz.open()
     page = doc.new_page(width=300, height=200)
@@ -61,13 +63,13 @@ def test_modo_editavel_preserva_desenhos_sob_o_texto(tmp_path):
     doc.save(str(origem))
     doc.close()
     destino = tmp_path / 'saida.pptx'
-    converter_pdf_para_pptx(str(origem), str(destino), MODO_EDITAVEL)
+    resultado = converter_pdf_para_pptx(str(origem), str(destino), MODO_EDITAVEL)
     slide = Presentation(str(destino)).slides[0]
-    assert 'sobre o vermelho' in _textos(slide)
-    fundo = _pixmap_da_figura(_figuras(slide)[0])
-    x, y = int(fundo.width * 40 / 300), int(fundo.height * 70 / 200)
-    r, g, b = fundo.pixel(x, y)[:3]
-    assert r > 200 and g < 60 and b < 60, f'o retangulo vermelho sumiu junto com o texto: {(r, g, b)}'
+    formas = [s for s in slide.shapes if s.shape_type == 1]            # AUTO_SHAPE
+    assert len(formas) == 1 and str(formas[0].fill.fore_color.rgb) == 'FF0000'
+    assert 'sobre o vermelho' in _textos(slide) and _figuras(slide) == []
+    assert list(slide.shapes)[-1].has_text_frame                       # o texto fica por cima
+    assert (resultado.formas, resultado.imagens) == (1, 0)
 
 
 def test_o_pdf_original_nao_e_alterado(sample_pdf, tmp_path):
@@ -166,3 +168,39 @@ def test_recusa_arquivo_que_nao_e_pdf_e_destino_igual_a_origem(sample_pdf, tmp_p
 def test_caracteres_de_controle_sao_removidos():
     assert _limpa('a\x00b\x01c\x1fd') == 'abcd'
     assert _limpa('linha\tcom tab') == 'linha\tcom tab'
+
+
+# ── posicao vertical do texto ────────────────────────────────────────────────
+
+def test_metricas_de_fonte_ilegivel_devolvem_none():
+    assert _metricas_win(b'') is None
+    assert _metricas_win(b'isto nao e uma fonte' * 20) is None
+
+
+@pytest.mark.parametrize('familia,esperado', [('Calibri', 0.936), ('Arial', 0.972), ('Segoe UI', 0.974)])
+def test_ascendente_do_powerpoint_segue_as_metricas_da_fonte_instalada(familia, esperado):
+    """A linha simples do PowerPoint mede 1,2x o tamanho, repartida como a fonte reparte
+    ascendente e descendente: foi o que bateu (erro de ate 2,4%) com o PowerPoint real."""
+    achado = _ascendente_do_powerpoint(familia, False, False)
+    if achado is None:
+        pytest.skip(f'{familia} nao esta instalada')
+    assert achado == pytest.approx(esperado, abs=0.01)
+
+
+def test_fonte_que_nao_existe_no_sistema_nao_tem_ascendente_proprio():
+    assert _ascendente_do_powerpoint('FonteQueNaoExiste', False, False) is None
+
+
+def test_a_linha_de_base_do_texto_cai_onde_estava_no_pdf(tmp_path):
+    """A caixa nao pode ser posta pelo topo da linha do PDF: o PowerPoint mede a linha de outro jeito."""
+    origem = tmp_path / 'base.pdf'
+    doc = fitz.open()
+    page = doc.new_page(width=400, height=200)
+    page.insert_text((72, 100), 'Linha de base', fontsize=20, fontname='helv')    # linha de base em y=100
+    doc.save(str(origem))
+    doc.close()
+    destino = tmp_path / 'base.pptx'
+    converter_pdf_para_pptx(str(origem), str(destino), MODO_EDITAVEL)
+    caixa = next(sh for sh in Presentation(str(destino)).slides[0].shapes if sh.has_text_frame)
+    ascendente = (100 - caixa.top / 12700) / 20          # fracao do tamanho entre o topo da caixa e a linha de base
+    assert 0.8 < ascendente < 1.05
