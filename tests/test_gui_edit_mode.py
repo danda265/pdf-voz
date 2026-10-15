@@ -534,3 +534,46 @@ def test_mensagem_da_conversao_conta_formas_imagens_e_o_que_ficou_como_imagem(qt
     assert '1 forma e 0 imagens separadas' in avisos[0] and '1 caixas de texto' in avisos[0]
     assert 'ficaram como imagem' not in avisos[0]              # nada ficou de fora nesta pagina
     window.close()
+
+
+def test_menu_converter_tem_os_tres_modos_e_o_ocr_dispara_o_modo_ocr(qtbot, monkeypatch):
+    from pdf_to_pptx import MODO_EDITAVEL, MODO_IMAGEM, MODO_OCR
+    window = MainWindow()
+    qtbot.addWidget(window)
+    acoes = window.convert_button.menu().actions()
+    assert len(acoes) == 3 and any('OCR' in a.text() for a in acoes)
+    pedidos = []
+    monkeypatch.setattr(window, 'converter_para_pptx', pedidos.append)
+    window.act_pptx_editavel.trigger()
+    window.act_pptx_ocr.trigger()
+    window.act_pptx_imagem.trigger()
+    assert pedidos == [MODO_EDITAVEL, MODO_OCR, MODO_IMAGEM]
+    window.close()
+
+
+def test_mensagem_do_modo_ocr_conta_os_paragrafos_e_avisa_que_o_ocr_pode_errar(qtbot, monkeypatch):
+    from pdf_to_pptx import ResultadoConversao
+    window = MainWindow()
+    qtbot.addWidget(window)
+    avisos = []
+    monkeypatch.setattr(window, '_avisar_conversao_pronta', lambda texto, destino: avisos.append(texto))
+    window._conversao_concluida(ResultadoConversao(
+        'x.pptx', 2, paginas_com_parte_em_imagem=2, paginas_com_ocr=2, paragrafos_ocr=7, linhas_ocr_ignoradas=3))
+    texto = avisos[0]
+    assert '7 parágrafos reconhecidos por OCR em 2 páginas' in texto and 'revise o texto' in texto
+    assert '3 linhas ficaram na imagem' in texto
+    assert 'não dá para separar' not in texto           # a imagem das paginas com OCR nao conta como "sobrou"
+    window.close()
+
+
+def test_mensagem_com_uma_pagina_so_imagem_e_outra_com_ocr_separa_os_avisos(qtbot, monkeypatch):
+    from pdf_to_pptx import ResultadoConversao
+    window = MainWindow()
+    qtbot.addWidget(window)
+    avisos = []
+    monkeypatch.setattr(window, '_avisar_conversao_pronta', lambda texto, destino: avisos.append(texto))
+    window._conversao_concluida(ResultadoConversao(
+        'x.pptx', 3, paginas_com_parte_em_imagem=3, paginas_com_ocr=1, paragrafos_ocr=1, linhas_ocr_ignoradas=1))
+    assert '1 parágrafo reconhecido por OCR em 1 página' in avisos[0]
+    assert 'Em 2 página(s), partes que não dá para separar' in avisos[0]
+    window.close()

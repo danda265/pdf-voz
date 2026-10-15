@@ -32,7 +32,7 @@ from pdf_editor import (
 from pdf_editor_view import PageScrollArea, SpanEditPopup
 from pdf_merge_dialog import JuntarDialog
 from pdf_to_pptx import (
-    MODO_EDITAVEL, MODO_IMAGEM, ConversaoCancelada, ConversaoError, ResultadoConversao,
+    MODO_EDITAVEL, MODO_IMAGEM, MODO_OCR, ConversaoCancelada, ConversaoError, ResultadoConversao,
     converter_pdf_para_pptx,
 )
 from atualizacao import procurar_novidade
@@ -370,9 +370,13 @@ class MainWindow(QMainWindow):
         self.act_pptx_editavel = menu_converter.addAction('PowerPoint editável (.pptx)')
         self.act_pptx_editavel.setToolTip('Textos, formas e fotos viram objetos que você pode editar; '
                                           'só o que não dá para separar fica como imagem')
+        self.act_pptx_ocr = menu_converter.addAction('PowerPoint com texto reconhecido, OCR (.pptx)')
+        self.act_pptx_ocr.setToolTip('Para PDF feito de imagens: o texto é reconhecido e vira caixas de texto. '
+                                     'O OCR pode errar: revise o texto')
         self.act_pptx_imagem = menu_converter.addAction('PowerPoint só com imagens (.pptx)')
         self.act_pptx_imagem.setToolTip('Cada página vira uma imagem: idêntico ao PDF, sem edição')
         self.act_pptx_editavel.triggered.connect(lambda: self.converter_para_pptx(MODO_EDITAVEL))
+        self.act_pptx_ocr.triggered.connect(lambda: self.converter_para_pptx(MODO_OCR))
         self.act_pptx_imagem.triggered.connect(lambda: self.converter_para_pptx(MODO_IMAGEM))
         self.convert_button.setMenu(menu_converter)
 
@@ -1120,9 +1124,17 @@ class MainWindow(QMainWindow):
                 'objeto do PowerPoint que você pode mover, recolorir, trocar ou apagar.')
         if resultado.caixas_de_texto:
             linhas.append(f'{resultado.caixas_de_texto} caixas de texto editáveis.')
-        if resultado.paginas_com_parte_em_imagem:
+        if resultado.paragrafos_ocr:
             linhas.append(
-                f'Em {resultado.paginas_com_parte_em_imagem} página(s), partes que não dá para separar '
+                f'{_contagem(resultado.paragrafos_ocr, "parágrafo reconhecido", "parágrafos reconhecidos")} '
+                f'por OCR em {_contagem(resultado.paginas_com_ocr, "página", "páginas")}, agora como texto '
+                'editável. O OCR pode errar (letras parecidas, palavras coladas): revise o texto. '
+                f'{_contagem(resultado.linhas_ocr_ignoradas, "linha ficou", "linhas ficaram")} na imagem '
+                '(texto pequeno, estilizado ou sobre foto).')
+        so_imagem = resultado.paginas_com_parte_em_imagem - resultado.paginas_com_ocr
+        if so_imagem > 0:
+            linhas.append(
+                f'Em {so_imagem} página(s), partes que não dá para separar '
                 'sem mudar a aparência (degradês, sombras, recortes de formato especial) ficaram '
                 'como imagem no slide.')
         if resultado.paginas_sem_texto_editavel:

@@ -8,6 +8,9 @@ Dois modos:
     (retangulos, elipses, linhas, curvas) e as fotos viram imagens soltas, tudo na ordem de
     empilhamento do PDF. O que o PDF nao descreve como forma (degrades, sombreados) ou nao da
     para separar com seguranca (foto recortada em canto redondo) fica como imagem de fundo.
+  - MODO_OCR: como o editavel, e nas paginas que sao so imagem (slides exportados como figura,
+    paginas escaneadas) o texto e reconhecido por OCR e vira caixas de texto, saindo da imagem.
+    O OCR erra: o que ele leu precisa de revisao.
 
 O PDF original nunca e alterado: as remocoes de texto acontecem so na copia em memoria.
 """
@@ -25,9 +28,10 @@ from statistics import median
 from typing import Callable, List, Optional, Tuple
 
 import fitz
+from PIL import Image
 from pptx import Presentation
 from pptx.dml.color import RGBColor
-from pptx.enum.text import MSO_ANCHOR, MSO_AUTO_SIZE
+from pptx.enum.text import MSO_ANCHOR, MSO_AUTO_SIZE, PP_ALIGN
 from pptx.util import Emu, Pt
 
 from pdf_editor import _fonte_do_sistema, familia_legivel
@@ -35,12 +39,14 @@ from pdf_to_pptx_objetos import (
     AnaliseDaPagina, Forma, Posicao, Recorte, adicionar_figura, adicionar_forma, analisar_pagina,
     pixels_diferentes, redesenhar,
 )
+from pdf_to_pptx_ocr import Paragrafo, reconhecer_e_limpar, tesseract_disponivel
 
 MODO_IMAGEM = 'imagem'
 MODO_EDITAVEL = 'editavel'
+MODO_OCR = 'ocr'
 
 # Resolucao do fundo de cada slide. O modo editavel usa menos porque o texto sai da imagem.
-_DPI = {MODO_IMAGEM: 200, MODO_EDITAVEL: 150}
+_DPI = {MODO_IMAGEM: 200, MODO_EDITAVEL: 150, MODO_OCR: 150}
 _LADO_MAXIMO_PX = 4000          # trava de memoria para paginas enormes (cartazes)
 _EMU_POR_PT = 12700
 _SLIDE_MAX_PT = 4000            # o PowerPoint nao aceita slide acima de 56 pol (4032 pt)
@@ -69,6 +75,9 @@ class ResultadoConversao:
     formas: int = 0                       # formas do PDF recriadas como objetos do slide
     imagens: int = 0                      # imagens do PDF recriadas como objetos do slide
     paginas_com_parte_em_imagem: int = 0  # paginas em que algo ficou como imagem de fundo
+    paginas_com_ocr: int = 0              # modo OCR: paginas so-imagem cujo texto foi reconhecido
+    paragrafos_ocr: int = 0               # ... e quantos paragrafos viraram caixas de texto
+    linhas_ocr_ignoradas: int = 0         # linhas lidas pelo OCR mas deixadas na imagem
 
 
 @dataclass
@@ -351,14 +360,98 @@ def _tenta_objetos(doc: fitz.Document, page: fitz.Page, analise: AnaliseDaPagina
         copia.close()
 
 
+def _imagem_para_ocr(page: fitz.Page, analise: AnaliseDaPagina) -> Tuple[Image.Image, fitz.Rect, str]:
+    """A imagem em que rodar o OCR, a area da pagina que ela ocupa e o formato de origem.
+
+    Slide feito de uma figura so: usa a figura como esta (sem renderizar de novo e perder
+    resolucao). Qualquer outra pagina so-imagem, como um scan: a pagina renderizada."""
+    pagina = page.rect
+    if len(analise.figuras) == 1 and analise.figuras_ok and not analise.recortes:
+        figura = analise.figuras[0]
+        if figura.caixa.width * figura.caixa.height >= 0.85 * pagina.width * pagina.height:
+            try:
+                return Image.open(BytesIO(figura.dados)).convert('RGB'), fitz.Rect(figura.caixa), figura.extensao
+            except Exception:
+                pass
+    dpi = max(36, min(200, int(_LADO_MAXIMO_PX / max(pagina.width, pagina.height) * 72)))
+    pix = page.get_pixmap(dpi=dpi, alpha=False)
+    return Image.frombytes('RGB', (pix.width, pix.height), pix.samples), fitz.Rect(pagina), 'png'
+
+
+def _adiciona_paragrafo_ocr(slide, p: Paragrafo, area: fitz.Rect, k: float, pos: Posicao, numero: int) -> None:
+    """Caixa de texto para um paragrafo reconhecido. `k` converte px da imagem em pt da pagina."""
+    x0, y0, x1, y1 = p.caixa
+    tamanho = p.tamanho_px * k                                  # pt da pagina
+    ascendente = _ascendente_do_powerpoint('Arial', p.negrito, False) or 0.97
+    topo = area.y0 + p.linhas[0].y0 * k - (ascendente - 0.716) * tamanho   # poe a linha de base no lugar
+    largura = (x1 - x0) * k * 1.06
+    altura = (y1 - y0) * k + tamanho * 0.4
+    caixa = slide.shapes.add_textbox(pos.x(area.x0 + x0 * k), pos.y(topo), pos.comprimento(largura),
+                                     pos.comprimento(altura))
+    quadro = caixa.text_frame
+    quadro.margin_left = quadro.margin_right = quadro.margin_top = quadro.margin_bottom = 0
+    quadro.word_wrap = False                   # as quebras sao as do original (quebras manuais)
+    quadro.auto_size = MSO_AUTO_SIZE.NONE
+    quadro.vertical_anchor = MSO_ANCHOR.TOP
+    paragrafo = quadro.paragraphs[0]
+    if p.centralizado:
+        paragrafo.alignment = PP_ALIGN.CENTER
+    if len(p.linhas) > 1 and p.passo_px:
+        paragrafo.line_spacing = Pt(p.passo_px * k * pos.escala)
+    for trecho in p.trechos:                    # cada trecho com a sua cor e o seu negrito
+        if trecho.quebra_antes:
+            paragrafo.add_line_break()
+        run = paragrafo.add_run()
+        run.text = _limpa(trecho.texto)
+        run.font.name = 'Arial'
+        run.font.size = Pt(max(4.0, tamanho * pos.escala))
+        run.font.bold = trecho.negrito
+        run.font.color.rgb = RGBColor(*trecho.cor)
+    caixa.name = f'Texto reconhecido {numero}'
+
+
+def _monta_pagina_ocr(page: fitz.Page, slide, analise: AnaliseDaPagina, pos: Posicao,
+                      resultado: ResultadoConversao) -> bool:
+    """Pagina so-imagem: texto reconhecido por OCR vira caixas, a imagem fica sem ele.
+    False se o OCR nao achou nada que valha a pena (a pagina segue o caminho normal)."""
+    imagem, area, extensao = _imagem_para_ocr(page, analise)
+    try:
+        lido = reconhecer_e_limpar(imagem)
+    except Exception:
+        return False
+    if not lido.paragrafos:
+        return False
+    buffer = BytesIO()
+    if extensao == 'jpg':
+        lido.imagem.save(buffer, 'JPEG', quality=93)
+    else:
+        lido.imagem.save(buffer, 'PNG')
+    buffer.seek(0)
+    figura = slide.shapes.add_picture(buffer, pos.x(area.x0), pos.y(area.y0), pos.comprimento(area.width),
+                                      pos.comprimento(area.height))
+    figura.name = 'Imagem (sem o texto reconhecido)'
+    k = area.width / imagem.width
+    for numero, paragrafo in enumerate(lido.paragrafos, start=1):
+        _adiciona_paragrafo_ocr(slide, paragrafo, area, k, pos, numero)
+    resultado.paginas_com_ocr += 1
+    resultado.paragrafos_ocr += len(lido.paragrafos)
+    resultado.linhas_ocr_ignoradas += lido.linhas_ignoradas
+    resultado.paginas_com_parte_em_imagem += 1
+    return True
+
+
 def _monta_pagina_editavel(doc: fitz.Document, page: fitz.Page, slide, slide_pt: Tuple[float, float],
-                           resultado: ResultadoConversao) -> None:
+                           resultado: ResultadoConversao, com_ocr: bool = False) -> None:
     escala, dx, dy = _encaixe(page.rect, slide_pt)
     pos = Posicao(escala, dx, dy)
     dpi = _DPI[MODO_EDITAVEL]
     girada = page.rotation != 0           # coordenadas de pagina girada nao batem com as da imagem
     analise = AnaliseDaPagina() if girada else analisar_pagina(doc, page)
     blocos = [] if girada else _linhas_editaveis(page)
+    # pagina so-imagem (sem texto nem formas de verdade): o OCR recupera o texto comum
+    if com_ocr and not girada and not blocos and not analise.formas and _monta_pagina_ocr(
+            page, slide, analise, pos, resultado):
+        return
     if not blocos:
         resultado.paginas_sem_texto_editavel += 1
     else:
@@ -425,8 +518,10 @@ def _monta_pagina_editavel(doc: fitz.Document, page: fitz.Page, slide, slide_pt:
 
 def converter_pdf_para_pptx(origem: str, destino: str, modo: str = MODO_EDITAVEL,
                             progress_callback: ProgressCallback = None) -> ResultadoConversao:
-    if modo not in (MODO_IMAGEM, MODO_EDITAVEL):
+    if modo not in (MODO_IMAGEM, MODO_EDITAVEL, MODO_OCR):
         raise ConversaoError('Modo de conversão desconhecido.')
+    if modo == MODO_OCR and not tesseract_disponivel():
+        raise ConversaoError('O reconhecimento de texto (OCR) não está disponível neste computador.')
     origem_p, destino_p = Path(origem), Path(destino)
     if origem_p.suffix.lower() != '.pdf' or not origem_p.is_file():
         raise ConversaoError('Abra um PDF válido para converter.')
@@ -455,8 +550,8 @@ def converter_pdf_para_pptx(origem: str, destino: str, modo: str = MODO_EDITAVEL
         for indice in range(total):
             page = doc[indice]
             slide = apresentacao.slides.add_slide(layout_vazio)
-            if modo == MODO_EDITAVEL:
-                _monta_pagina_editavel(doc, page, slide, slide_pt, resultado)
+            if modo in (MODO_EDITAVEL, MODO_OCR):
+                _monta_pagina_editavel(doc, page, slide, slide_pt, resultado, com_ocr=(modo == MODO_OCR))
             else:
                 escala, dx, dy = _encaixe(page.rect, slide_pt)
                 slide.shapes.add_picture(_imagem_da_pagina(page, _DPI[modo]), _emu(dx), _emu(dy),

@@ -87,6 +87,12 @@ Com um PDF aberto, **Converter** → escolha o modo e o local onde salvar o `.pp
     redimensionar, editar os pontos ou apagar;
   - **fotos e imagens** soltas, com a transparência, para trocar, recortar ou apagar;
   - o retângulo que cobre a página inteira vira o **fundo do slide**.
+- **PowerPoint com texto reconhecido (OCR)** — para PDF **feito de imagens** (slides exportados
+  como figura, páginas escaneadas), onde não há texto nem forma dentro do arquivo, só pixels. O app
+  lê o texto por OCR (português, com o Tesseract que já vem no programa) e o devolve como caixas de
+  texto: cada palavra mantém a cor e o negrito que tinha, as quebras de linha ficam onde estavam e o
+  texto some da imagem, que fica por baixo. Páginas com texto de verdade seguem o modo editável.
+  Leva cerca de 2 segundos por página.
 - **PowerPoint só com imagens** — cada página vira uma imagem no slide: idêntico ao PDF, mas
   sem nada para editar.
 
@@ -97,6 +103,13 @@ Ficam como imagem no slide: degradês e sombreados, formas dentro de recortes de
 páginas com centenas de traços (texto vetorizado, mapas), PDF escaneado, página girada e texto na
 vertical. Ao terminar, o app diz quantas formas, imagens e caixas de texto foram criadas e em quantas
 páginas algo ficou como imagem.
+
+**Limites do OCR:** ele erra, então o texto reconhecido precisa de revisão (letras parecidas,
+palavras coladas como "Facilitaoacessoa"). A fonte vira Arial. Texto pequeno, estilizado (letras
+pesadas, em degradê) ou sobre foto continua na imagem, porque apagá-lo estragaria o desenho ao redor:
+o texto só é retirado onde o fundo é liso. Ícones, notebooks, gráficos e fotos continuam imagem: de
+pixels não dá para recuperar formas editáveis. Para ter tudo editável, o caminho é o arquivo de
+origem (por exemplo, exportar como PPTX da ferramenta em que o slide foi feito).
 
 Limites: as quebras de linha são as do PDF (cada linha é fixa, o PowerPoint não reflui o parágrafo),
 o espaçamento entre letras não é reproduzido, e, se a fonte original não existir no computador, o
@@ -165,7 +178,7 @@ deve bater com `MyAppVersion` em `installer.iss`.
 | `gui.py` | Janela principal, modo leitura e modo edição |
 | `pdf_editor.py` | Motor de edição de PDF (sem dependência de interface) |
 | `pdf_editor_view.py` | Canvas da página e caixa de edição |
-| `pdf_to_pptx.py` · `pdf_to_pptx_objetos.py` | Conversão de PDF para PowerPoint (sem dependência de interface): montagem do slide e recriação das formas e imagens |
+| `pdf_to_pptx.py` · `pdf_to_pptx_objetos.py` · `pdf_to_pptx_ocr.py` | Conversão de PDF para PowerPoint (sem dependência de interface): montagem do slide, recriação das formas e imagens e reconhecimento de texto por OCR |
 | `pdf_merge.py` · `pdf_merge_dialog.py` | Juntar PDFs: motor (sem interface) e janela de montagem |
 | `document_reader.py` · `pdf_reader.py` · `word_reader.py` | Extração de texto |
 | `tts_engine.py` · `audio_player.py` | Síntese e reprodução de voz |
