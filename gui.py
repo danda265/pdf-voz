@@ -37,7 +37,7 @@ from pdf_to_pptx import (
 )
 from atualizacao import procurar_novidade
 
-APP_VERSION = '1.4.0'   # fonte única da versão — o instalador (.iss) deve usar o mesmo valor
+APP_VERSION = '1.5.0'   # fonte única da versão — o instalador (.iss) deve usar o mesmo valor
 
 _FONT_MIN, _FONT_MAX, _FONT_DEFAULT = 12, 28, 15
 
